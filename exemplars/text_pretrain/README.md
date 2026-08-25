@@ -44,7 +44,7 @@ CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/pretrain.py
 # 2 · the compute-optimal scaling law — split the depths across both GPUs, then fit:
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/scaling.py run --depths 8 6
 CUDA_VISIBLE_DEVICES=1 .venv/bin/python exemplars/text_pretrain/scaling.py run --depths 4 3 2
-.venv/bin/python exemplars/text_pretrain/scaling.py fit        # -> scaling_law.png + scaling.json
+.venv/bin/python exemplars/text_pretrain/scaling.py fit        # -> outputs/ + a diff vs example_results/
 
 # 3 · sample from the champion
 CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/inference.py
@@ -118,8 +118,10 @@ inference.py     stage 3 · sample the champion (loads via core load_system —
 provenance.md    how lr_max=3e-4 was chosen (the LR bracket) + how to re-tune
 inference_compare.md  the budget ladder: one spec, four budgets, samples side by side
 data/            download_shards.py — fetch the FineWeb shards
-scaling_law.png  the headline figure (stage 2 output)
-results/         scaling.json · samples.md · bracket.json
+example_results/ THE RUN THIS EXEMPLAR SHIPS — scaling.json · scaling_law.png ·
+                 samples.md · bracket.json. Committed; nothing here writes to it.
+outputs/         YOUR run lands here (gitignored). `scaling.py fit` prints the
+                 difference against example_results/ so you can see both.
 RESULTS.md       the pinned capability log
 ```
 

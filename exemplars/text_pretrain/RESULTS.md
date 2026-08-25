@@ -34,7 +34,7 @@ LR (scheduler warmdown off, so each curve is genuine loss-vs-compute) with a
 the budget changes); validation evaluated at **40 log-spaced steps** from step 20
 (~0.66 M tokens) — the schedule is computed by `scaling.py` and injected through
 the core evaluator's `eval_at` (core never computes schedules). In
-[`scaling_law.png`](scaling_law.png), plotted as loss vs compute (C = 6ND), each
+[`scaling_law.png`](example_results/scaling_law.png), plotted as loss vs compute (C = 6ND), each
 size drops → bends → flattens to its floor; the **lower envelope is the
 compute-optimal frontier** — at each budget several sizes compete and one (★) is
 optimal.
@@ -70,14 +70,27 @@ CE and the fixed val prefix keeps the bias consistent across curves. Single
 curves also keep a run-to-run character — two d8 runs differing only in warmup
 length wiggle in different places — while the frontier is robust to it (see the
 budget progression above). Raw curves + fit:
-[`results/scaling.json`](results/scaling.json).
+[`example_results/scaling.json`](example_results/scaling.json).
+
+**Reproducing this on your own tokenizer: compare the exponent, not the CE.**
+Every CE here is per-TOKEN, so it is only comparable inside one tokenizer
+artifact — retrain the BPE and the merges change, each token carries a different
+number of bytes, and the absolute level moves even on identical data. (§1 already
+shows how badly a byte table can be misread: `token_bytes.pt` was once missing
+and "bpb 5.497" was silently bits-per-token.) The exponent is a log-log slope and
+does not care: an independent reproduction on a re-trained BPE recovered
+**a = 0.508** against the 0.519 here. For a level you can compare across
+tokenizers, read `val/bpb` — normalised per UTF-8 byte — which `scaling.py` now
+records alongside CE in each trajectory point when a byte table is present. The
+curves shipped above predate that, so they carry no bpb to compare against; the
+exponent is what to check a reproduction by until a reference run records it.
 
 ## 3 · Inference
 
 Continuations from the champion through the **core KV-cache engine**
 (`core.model.inference.autoregressive_generate`), temp 0.8 / top-k 40 — coherent,
 grammatical English at 135M params. Four samples in
-[`results/samples.md`](results/samples.md); e.g. *"The history of the Roman
+[`example_results/samples.md`](example_results/samples.md); e.g. *"The history of the Roman
 Empire"* → *"…and the birthplace of the Roman Empire. It was founded by the
 monarchy of the 3rd century B.C. …"*. The trained model runs end-to-end as an LM,
 not just a loss number.

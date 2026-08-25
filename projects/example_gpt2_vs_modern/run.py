@@ -11,6 +11,7 @@ LOCAL module (e.g. `gpt2.GPT2Trunk`) — the folder is a drop-in unit you can co
 anywhere.
 """
 import json
+import math
 import os
 import re
 import subprocess
@@ -22,10 +23,35 @@ import numpy as np
 import spec
 
 HERE = Path(__file__).resolve().parent
-RESULTS = HERE / "results"
-RESULTS.mkdir(exist_ok=True)
+# outputs/, not example_results/: the committed curves are the reference this
+# example is compared against; a run must not overwrite them.
+OUT = HERE / "outputs"
+OUT.mkdir(exist_ok=True)
 
-EVAL_RE = re.compile(r"Step\s+(\d+)\s+\|\s+val/text_ce:\s+([\d.]+)")
+# Anchor on "Step N |" and read fields BY NAME. The orchestrator builds that line
+# by joining whatever metrics exist, so neither field order nor the presence of
+# any given field is guaranteed — a positional regex silently matches nothing when
+# the line changes, and the arm is then reported as FAILED while it trained fine.
+STEP_RE = re.compile(r"^Step\s+(\d+)\s+\|\s+(.+)$")
+
+
+def parse_eval_line(line):
+    """'Step 00029 | val/text_ce: 6.46 | val/bpb: 2.11' -> (29, {name: value}) or None."""
+    m = STEP_RE.match(line.strip())
+    if not m:
+        return None
+    fields = {}
+    for part in m.group(2).split(" | "):
+        k, sep, v = part.partition(": ")
+        if sep:
+            try:
+                x = float(v)
+            except ValueError:
+                continue                  # non-numeric field (a label, a time)
+            if math.isfinite(x):          # a diverged run logs nan/inf; float()
+                fields[k.strip()] = x     # accepts both, and one would poison the fit
+
+    return (int(m.group(1)), fields) if fields else None
 
 
 def _nanoinfra_checkout(start):
@@ -59,13 +85,26 @@ def eval_schedule(max_steps, n=spec.N_EVALS, first=5):
 
 def run_arm(label, trunk_class, max_steps, steps, env, cwd):
     ov = spec.train_overrides(trunk_class, max_steps, steps)
-    print(f"[run ] {label}: d{spec.DEPTH} -> {max_steps} steps ...", flush=True)
-    out = subprocess.run([sys.executable, "-u", "-m", spec.ORCHESTRATOR, *ov],
-                         cwd=cwd, env=env, capture_output=True, text=True)
-    text = out.stdout + "\n" + out.stderr
-    traj = [{"step": int(s), "val": float(v)} for s, v in EVAL_RE.findall(text)]
-    if out.returncode != 0 or len(traj) < 3:
-        raise SystemExit(f"arm {label} FAILED (rc={out.returncode}, {len(traj)} evals):\n{text[-3000:]}")
+    log = OUT / f"arm_{label}.log"
+    print(f"[run ] {label}: d{spec.DEPTH} -> {max_steps} steps "
+          f"-> {log.parent.name}/{log.name} (tail -f to watch)", flush=True)
+    # The child's output goes straight to a file; this process never reads the
+    # stream. Reading it would mean deciding, live, which lines to echo and which
+    # to parse — two jobs braided into one loop. Parsing a log is fine; parsing it
+    # while relaying it is what was not. Run, then parse the file, once.
+    # `-u` keeps the child unbuffered so `tail -f` is live; subprocess.run also
+    # cleans the child up if this process dies.
+    with open(log, "w") as f:
+        rc = subprocess.run([sys.executable, "-u", "-m", spec.ORCHESTRATOR, *ov],
+                            cwd=cwd, env=env, stdout=f, stderr=subprocess.STDOUT).returncode
+    traj = []
+    with open(log, errors="replace") as f:
+        for line in f:
+            parsed = parse_eval_line(line)
+            if parsed and "val/text_ce" in parsed[1]:
+                traj.append({"step": parsed[0], "val": parsed[1]["val/text_ce"]})
+    if rc != 0 or len(traj) < 3:
+        raise SystemExit(f"arm {label} FAILED (rc={rc}, {len(traj)} evals) — see {log}")
     print(f"[done] {label}: {len(traj)} evals, val {traj[0]['val']:.3f} -> {traj[-1]['val']:.3f}", flush=True)
     return {"arm": label, "trajectory": traj}
 
@@ -75,9 +114,9 @@ def main():
     max_steps = int(spec.MAX_TOKENS // spec.TBS)
     steps = eval_schedule(max_steps)
     arms = [run_arm(label, tc, max_steps, steps, env, cwd) for label, tc in spec.ARMS]
-    (RESULTS / "curves.json").write_text(
+    (OUT / "curves.json").write_text(
         json.dumps({"depth": spec.DEPTH, "max_steps": max_steps, "arms": arms}, indent=2))
-    print(f"WROTE {RESULTS / 'curves.json'}")
+    print(f"WROTE {OUT / 'curves.json'}")
 
 
 if __name__ == "__main__":

@@ -40,7 +40,10 @@ python -m venv .venv
 pip install -e .
 ```
 
-Requires Python ≥ 3.12 and a CUDA GPU for training.
+Requires Python ≥ 3.12 and a CUDA GPU for training. `use_compile` is on by
+default and torch.compile's inductor backend compiles C++17, so a **gcc ≥ 9**
+toolchain has to be on PATH (set `CC`/`CXX` if the system compiler is older —
+CentOS 7 ships 4.8.5, for instance). Train with `use_compile=false` to skip it.
 
 ## Quickstart — the text exemplar
 

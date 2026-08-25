@@ -1,11 +1,25 @@
-"""Download additional FineWeb sample-10BT parquet shards into outputs/base_data/.
+"""Fetch FineWeb sample-10BT parquet shards into <base>/base_data/.
 
-Reuses the original download mechanism (huggingface_hub.hf_hub_download into the
-_hf/ cache dir, then move + rename with the `shard_NNN_00000.parquet` prefix so
-files sort AFTER the existing shards). All-but-last sorted shard = train, last =
-val (modalities/text/fineweb.py convention), so the new last shard becomes val.
+Two uses, and the default serves the first:
 
-Run: .venv/bin/python exemplars/text_pretrain/data/download_shards.py 003 004 005
+  from scratch   no arguments -> the six shards this exemplar is documented
+                 against (~13 GB on disk). Shard COUNT is not a detail: the val
+                 split is DECLARED (train_text.yaml pins one file by name) and
+                 train is `rest: true`, so the training corpus is whatever else
+                 you happened to fetch. Fetch fewer and the run silently repeats
+                 data instead of erroring — the orchestrator now prints the
+                 resulting epoch count at startup. See README "Data".
+  incrementally  pass shard ids to add more; they join TRAIN. The
+                 `shard_NNN_00000.parquet` prefix keeps the listing sorted and
+                 stable. Moving the val ruler is a config edit, never a
+                 side effect of downloading (modalities/text/datasets.py: splits
+                 are declared, never inferred).
+
+Downloads go through huggingface_hub.hf_hub_download into a _hf/ cache beside
+the shards, are verified readable, then moved into place.
+
+Run: .venv/bin/python exemplars/text_pretrain/data/download_shards.py
+     .venv/bin/python exemplars/text_pretrain/data/download_shards.py 006 007
 """
 import shutil
 import sys
@@ -50,4 +64,9 @@ def main(idxs):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:] or ["003", "004", "005"])
+    # The documented set, not a subset of it: README and RESULTS both describe a
+    # six-shard corpus (5 train + 1 val = single-epoch at the Chinchilla budget).
+    # The old default of 003-005 gave a fresh clone two train shards, ~40% of what
+    # the docs claim, and turned the champion run into ~1.87 epochs without a word
+    # in the log.
+    main(sys.argv[1:] or ["000", "001", "002", "003", "004", "005"])

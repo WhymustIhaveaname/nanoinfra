@@ -86,8 +86,10 @@ logging:
   wandb_log_every: 100       # Wandb log frequency (steps)
 
 # ============================================================================
-# Evaluation config — eval cadence is set by each evaluator's own interval_steps
-# (e.g. evaluation.text.interval_steps); a full eval always fires on the last step.
+# Evaluation config — cadence comes from `evaluation.interval_steps`, or from an
+# explicit `evaluation.eval_at` step list; a full eval always fires on the last
+# step. (Pre-2026-07 configs addressed a per-evaluator `evaluation.<name>.*`; that
+# schema is gone, and overriding it now fails loudly instead of being ignored.)
 # ============================================================================
 evaluation: {}
 

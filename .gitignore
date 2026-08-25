@@ -25,5 +25,11 @@ models/*
 outputs/*
 !outputs/.gitkeep
 
+# Per-exemplar run output. NOT a bare `outputs/`: that would match the root one
+# too, and git does not descend into an ignored directory, so `!outputs/.gitkeep`
+# above could no longer re-include the scaffold.
+exemplars/*/outputs/
+projects/*/outputs/
+
 # --- OS ---
 .DS_Store

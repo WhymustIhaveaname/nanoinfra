@@ -29,11 +29,12 @@ envelope picks the single best.
 Run — split the depths across both GPUs, then collect + fit + plot:
   CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/scaling.py run --depths 8 6
   CUDA_VISIBLE_DEVICES=1 .venv/bin/python exemplars/text_pretrain/scaling.py run --depths 4 3 2
-  .venv/bin/python exemplars/text_pretrain/scaling.py fit   # -> scaling.json + scaling_law.png
+  .venv/bin/python exemplars/text_pretrain/scaling.py fit   # -> outputs/scaling.json + .png
 """
 import argparse
 import glob
 import json
+import math
 import os
 import re
 import subprocess
@@ -47,8 +48,17 @@ import scaling_fit
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent           # repo root — the orchestrator subprocess runs here
-RESULTS = HERE / "results"
-RESULTS.mkdir(exist_ok=True)
+
+# Two directories, and NOTHING here writes to the first one. `example_results/`
+# holds the run this exemplar ships as its claim (committed, linked from
+# RESULTS.md); OUT holds yours. They used to be one directory, so running the
+# exemplar overwrote the numbers it was published to demonstrate — and the
+# comparison you actually want ("mine vs theirs") became impossible at the exact
+# moment you produced something to compare. `outputs/` is the name on purpose:
+# .gitignore and make_release.py already exclude an `outputs/` at any depth.
+OUT = HERE / "outputs"
+OUT.mkdir(exist_ok=True)
+EXAMPLE = HERE / "example_results"   # read-only here: `fit` compares against it, never writes it
 
 DEPTHS = [2, 3, 4, 6, 8]            # model sizes N (non-embedding params)
 SEQ_LEN, DBS, TBS = 1024, 32, 32768
@@ -72,7 +82,61 @@ EVAL_TOKENS = 524288                # 512K val tokens per eval. MEASURED (same t
                                     #   smoothness; and a scaling study needs RELATIVE CE only
                                     #   (deterministic window -> bias consistent across curves).
 
-EVAL_RE = re.compile(r"Step\s+(\d+)\s+\|\s+val/text_ce:\s+([\d.]+)")
+# The orchestrator's eval line is assembled by joining whatever metrics exist
+# (core/training/trainer.py), so neither the field ORDER nor the PRESENCE of any
+# given field is guaranteed: `val/bpb` only appears when a token_bytes.pt is on
+# disk. Anchor on "Step N |" and then look fields up BY NAME — a positional
+# regex would simply stop matching on a setup without bpb, and the run would be
+# reported as "0 eval points, curve FAILED" while the training was in fact fine.
+STEP_RE = re.compile(r"^Step\s+(\d+)\s+\|\s+(.+)$")
+
+
+def parse_eval_line(line):
+    """'Step 00029 | val/text_ce: 6.46 | val/bpb: 2.11' -> (29, {name: value}) or None."""
+    m = STEP_RE.match(line.strip())
+    if not m:
+        return None
+    fields = {}
+    for part in m.group(2).split(" | "):
+        k, sep, v = part.partition(": ")
+        if sep:
+            try:
+                x = float(v)
+            except ValueError:
+                continue                  # non-numeric field (a label, a time)
+            if math.isfinite(x):          # a diverged run logs nan/inf; float()
+                fields[k.strip()] = x     # accepts both, and one would poison the fit
+    return (int(m.group(1)), fields) if fields else None
+
+
+def parse_curve_log(path, N):
+    """A finished run's log -> its (compute, val) trajectory. One pass, no side effects.
+
+    Reading the numbers back out of a human-readable log is a normal thing for a
+    small local study to do, and it keeps the training log free to be whatever it
+    is. What this deliberately is NOT is a filter on a live stream: the parse runs
+    over a file that has stopped changing, so it has one job.
+
+    bpb rides along when the log has it. CE is per-token and comparable only
+    within one tokenizer artifact; bpb is per-UTF-8-byte and survives a retrained
+    BPE, which is what a reproduction on someone else's tokenizer needs. Nothing
+    fits on bpb — it is recorded so that comparison becomes possible at all.
+    """
+    traj = []
+    with open(path, errors="replace") as f:
+        for line in f:
+            parsed = parse_eval_line(line)
+            if parsed is None:
+                continue
+            step, fields = parsed
+            if "val/text_ce" not in fields:
+                continue
+            point = {"step": step, "tokens": step * TBS,
+                     "compute": 6.0 * N * step * TBS, "val": fields["val/text_ce"]}
+            if "val/bpb" in fields:
+                point["bpb"] = fields["val/bpb"]
+            traj.append(point)
+    return traj
 
 
 def n_nonembed(depth):
@@ -108,17 +172,27 @@ def run_curve(depth):
         "evaluation.eval_tokens": EVAL_TOKENS,
         "logging.log_every": 200,
     })
+    log = OUT / f"curve_d{depth}.log"
     print(f"[run ] d{depth} N={N/1e6:.1f}M -> {MAX_TOKENS/1e6:.0f}M tokens "
-          f"({max_steps} steps, {len(steps)} log-spaced evals) ...", flush=True)
-    out = subprocess.run([sys.executable, "-u", "-m", spec.ORCHESTRATOR, *ov],
-                         cwd=REPO, env={**os.environ, "PYTHONPATH": str(REPO)},
-                         capture_output=True, text=True)
-    text = out.stdout + "\n" + out.stderr
-    traj = [{"step": int(s), "tokens": int(s) * TBS,
-             "compute": 6.0 * N * int(s) * TBS, "val": float(v)}
-            for s, v in EVAL_RE.findall(text)]
-    if out.returncode != 0 or len(traj) < 3:
-        raise SystemExit(f"curve d{depth} FAILED (rc={out.returncode}, {len(traj)} evals):\n{text[-2000:]}")
+          f"({max_steps} steps, {len(steps)} log-spaced evals) -> {log.name} "
+          f"(tail -f to watch)", flush=True)
+    # The child's output goes STRAIGHT to a file; this process never reads the
+    # stream. Reading it would mean deciding, live, which lines to echo and which
+    # to parse — two jobs braided into one loop, over a stream that can contain
+    # anything. Parsing a log afterwards is fine; parsing it while relaying it is
+    # what was not. `-u` above keeps the child unbuffered, so the file is live
+    # under `tail -f`, and subprocess.run cleans the child up if this process dies.
+    #
+    # A subprocess rather than an in-process call, deliberately: the orchestrator
+    # is a @hydra.main CLI entry, and reaching it any other way (the compose API)
+    # would characterise a different code path than the one users run.
+    with open(log, "w") as f:
+        rc = subprocess.run([sys.executable, "-u", "-m", spec.ORCHESTRATOR, *ov],
+                            cwd=REPO, env={**os.environ, "PYTHONPATH": str(REPO)},
+                            stdout=f, stderr=subprocess.STDOUT).returncode
+    traj = parse_curve_log(log, N)
+    if rc != 0 or len(traj) < 3:
+        raise SystemExit(f"curve d{depth} FAILED (rc={rc}, {len(traj)} evals) — see {log}")
     print(f"[done] d{depth}: {len(traj)} eval points, val {traj[0]['val']:.3f} -> {traj[-1]['val']:.3f}",
           flush=True)
     return {"depth": depth, "N": N, "trajectory": traj}
@@ -126,7 +200,7 @@ def run_curve(depth):
 
 def cmd_run(args):
     """Train one curve per depth (one GPU). Per-shard JSON, resumable."""
-    shard = RESULTS / f"curves_{'-'.join(map(str, args.depths))}.json"
+    shard = OUT / f"curves_{'-'.join(map(str, args.depths))}.json"
     curves = json.loads(shard.read_text())["curves"] if shard.exists() else []
     done = {c["depth"] for c in curves}
     for d in args.depths:
@@ -141,11 +215,11 @@ def cmd_run(args):
 def cmd_fit(args):
     """Merge shards, fit the frontier exponent, write scaling.json + the figure."""
     by_depth = {}
-    for f in sorted(glob.glob(str(RESULTS / "curves_*.json"))):
+    for f in sorted(glob.glob(str(OUT / "curves_*.json"))):
         for c in json.loads(Path(f).read_text())["curves"]:
             by_depth[c["depth"]] = c
-    if not by_depth and (RESULTS / "scaling.json").exists():   # re-fit/re-plot from committed output
-        for c in json.loads((RESULTS / "scaling.json").read_text()).get("curves", []):
+    if not by_depth and (OUT / "scaling.json").exists():   # re-plot from YOUR last fit
+        for c in json.loads((OUT / "scaling.json").read_text()).get("curves", []):
             by_depth[c["depth"]] = c
     curves = sorted(by_depth.values(), key=lambda c: c["N"])
     if len(curves) < 3:
@@ -158,9 +232,53 @@ def cmd_fit(args):
                      "eval_schedule": f"{N_EVALS} log-spaced from step 20",
                      "eval_tokens": EVAL_TOKENS},
            "a_frontier": a, "curves": curves}
-    (RESULTS / "scaling.json").write_text(json.dumps(out, indent=2))
+    (OUT / "scaling.json").write_text(json.dumps(out, indent=2))
     _plot(curves, a)
-    print(f"wrote {RESULTS / 'scaling.json'} + {HERE / 'scaling_law.png'}")
+    print(f"wrote {OUT / 'scaling.json'} + {OUT / 'scaling_law.png'}")
+    _compare_to_example(curves, a)
+
+
+def _compare_to_example(curves, a):
+    """Print your fit beside the one this exemplar ships, if it is still there.
+
+    The point of a reproduction is the comparison, and it is the first thing you
+    want and the last thing the old layout let you have: `fit` used to overwrite
+    the shipped numbers, so producing your own destroyed what you meant to check
+    against. Both live now, so print the difference instead of making everyone
+    diff two JSON files by hand.
+
+    Absolute CE is NOT comparable across tokenizer artifacts (a different BPE
+    means a different number of bytes behind each token). The exponent is: it is
+    a log-log slope, and it is what should reproduce.
+    """
+    ref = EXAMPLE / "scaling.json"
+    if not ref.exists():
+        return
+    try:
+        r = json.loads(ref.read_text())
+    except (json.JSONDecodeError, OSError):
+        return
+    ref_curves = r.get("curves", [])
+    ra, rc = r.get("a_frontier"), {c["depth"]: c for c in ref_curves}
+    print(f"\n  vs {ref.relative_to(HERE)} (the run this exemplar ships):")
+    if a and ra:
+        print(f"    a_frontier      example {ra:.4f}   yours {a:.4f}   ({a - ra:+.4f})")
+    for c in curves:
+        o = rc.get(c["depth"])
+        if not o or not c.get("trajectory") or not o.get("trajectory"):
+            continue
+        mine, theirs = c["trajectory"][-1], o["trajectory"][-1]
+        print(f"    val CE @ d{c['depth']:<3}    example {theirs['val']:.4f}   "
+              f"yours {mine['val']:.4f}   ({mine['val'] - theirs['val']:+.4f})")
+    print("    (CE is per-token: comparable only within ONE tokenizer artifact. "
+          "The exponent is the part that should reproduce.)")
+    # Be explicit about what is NOT on offer. The shipped reference predates bpb
+    # collection, so on a re-trained BPE the only level comparison available here
+    # is the one that does not survive a tokenizer change. Saying so beats letting
+    # a reader draw conclusions from the CE column we just told them to distrust.
+    if not any("bpb" in p for c in ref_curves for p in c.get("trajectory", [])):
+        print("    (The shipped reference predates val/bpb, so no byte-normalised "
+              "comparison is possible against it — yours records bpb for the next one.)")
 
 
 def _plot(curves, a):
@@ -212,7 +330,7 @@ def _plot(curves, a):
     ax.set_yticklabels([f"{v:g}" for v in yt])
     ax.yaxis.set_minor_formatter(matplotlib.ticker.NullFormatter())
     fig.tight_layout()
-    fig.savefig(HERE / "scaling_law.png", dpi=150)
+    fig.savefig(OUT / "scaling_law.png", dpi=150)
 
 
 def main():

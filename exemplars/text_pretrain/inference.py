@@ -43,7 +43,9 @@ PROMPTS = [
     "The best way to learn a new language is",
     "Once upon a time, in a small village",
 ]
-OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", "samples.md")
+# outputs/, not example_results/: the committed samples.md is what this exemplar
+# claims it produces, and a run must not overwrite the thing it is checked against.
+OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "outputs", "samples.md")
 
 
 def main():

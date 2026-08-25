@@ -47,7 +47,7 @@ different architecture, not a tweak of GPT.
 | `gpt2_rope.py` | `GPT2RoPETrunk` — `gpt2.py` with learned-pos → RoPE, the single-change ablation rung |
 | `spec.py`  | the recipe (depth, budget, the two arms) — the one knob |
 | `run.py`   | trains both arms through the orchestrator, collects the val curves |
-| `plot.py`  | the two curves → `gpt2_vs_modern.png` |
+| `plot.py`  | the two curves → `outputs/gpt2_vs_modern.png` |
 
 ## Run it
 
@@ -57,13 +57,13 @@ python exemplars/text_pretrain/data/download_shards.py
 
 # then, from this directory
 python run.py     # trains modern + gpt2 (d6, minutes)
-python plot.py    # -> gpt2_vs_modern.png
+python plot.py    # -> outputs/gpt2_vs_modern.png
 ```
 
 ## Result
 
 <!-- filled from an actual d6 run (~20M tokens, one FineWeb shard, constant LR) -->
-![gpt2 vs modern](gpt2_vs_modern.png)
+![gpt2 vs modern](example_results/gpt2_vs_modern.png)
 
 | arm | val CE @ end (step 1219) |
 |-----|-------------------------:|

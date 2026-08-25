@@ -53,8 +53,8 @@ def train_overrides(trunk_class, max_steps, eval_at):
         "optimizer.scheduler.warmdown_ratio": 0.0,   # constant LR after warmup
         "optimizer.scheduler.final_lr_frac": 1.0,
         "checkpoint.enabled": "false",
-        "evaluation.text.eval_at": "[" + ",".join(map(str, eval_at)) + "]",
-        "evaluation.text.eval_tokens": EVAL_TOKENS,
+        "evaluation.eval_at": "[" + ",".join(map(str, eval_at)) + "]",
+        "evaluation.eval_tokens": EVAL_TOKENS,
         "logging.log_every": 100,
     }
     if trunk_class:

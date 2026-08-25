@@ -1,5 +1,5 @@
 """plot.py — the two val-loss curves, modern vs GPT-2-style trunk, from run.py's
-results/curves.json. Writes gpt2_vs_modern.png."""
+outputs/curves.json. Writes outputs/gpt2_vs_modern.png."""
 import json
 from pathlib import Path
 
@@ -7,7 +7,7 @@ HERE = Path(__file__).resolve().parent
 
 
 def main():
-    data = json.loads((HERE / "results" / "curves.json").read_text())
+    data = json.loads((HERE / "outputs" / "curves.json").read_text())
 
     import matplotlib
     matplotlib.use("Agg")
@@ -33,7 +33,8 @@ def main():
     ax.grid(True, which="both", ls=":", alpha=0.4)
     ax.legend()
     fig.tight_layout()
-    out = HERE / "gpt2_vs_modern.png"
+    out = HERE / "outputs" / "gpt2_vs_modern.png"
+    out.parent.mkdir(exist_ok=True)   # plot.py can be re-run alone, after outputs/ was cleaned
     fig.savefig(out, dpi=150)
     print(f"wrote {out}")
 

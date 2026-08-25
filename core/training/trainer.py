@@ -32,6 +32,7 @@ try:
 except ImportError:
     wandb = None
 
+import re
 import torch
 
 from core.utils import print0, DummyWandb
@@ -112,28 +113,34 @@ def create_optimizers(system, optimizer_config: dict, world_size: int):
     return build_optimizers(system, optimizer_config, world_size)
 
 
-def detect_gpu_type() -> tuple[str, float]:
+def detect_gpu_type() -> tuple[str, float | None]:
     """
-    Auto-detect GPU type and return corresponding TFLOPS (bf16).
+    Auto-detect the GPU and return its bf16 peak, for the MFU denominator.
 
     Returns:
         tuple: (gpu_name, promised_flops)
-            - gpu_name: str - 'H100' or 'H20'
-            - promised_flops: float - TFLOPS in bf16 precision
+            - gpu_name: str - the detected name, or the raw device name if unknown
+            - promised_flops: float | None - bf16 dense peak; None if unknown
 
-    Raises:
-        ValueError: If GPU type is not supported (not H100 or H20)
-
-    Supported GPUs:
-        - H100 SXM5: 989 TFLOPS (bf16)
-        - H20: 296 TFLOPS (bf16)
+    An unknown GPU DEGRADES, it does not raise. This number feeds exactly one
+    thing -- the MFU column in the log (see _calculate_metrics) -- and a missing
+    display metric must not be able to end a training run. It used to raise, and
+    the failure landed in Trainer.__init__: tokenizer, vocab layout, model, data
+    and optimizers had all already built, so the first thirty lines of the log
+    were green and the traceback pointed at a metric function. A lookup table is
+    also permanently incomplete -- A800, L40S, V100, B200 are all one more entry
+    away -- so the miss path has to be survivable rather than merely documented.
     """
     gpu_device_name = torch.cuda.get_device_name(0).upper()
 
     # GPU performance specs (bf16 TFLOPS)
     gpu_specs = {
         'H100': 989e12,  # H100 SXM5 80GB
+        # H200 is H100 compute with more/faster memory — same bf16 dense peak.
+        'H200': 989e12,
         'H20': 296e12,   # H20
+        # A100 SXM4-80GB and PCIe-40GB are both 312 TFLOPS bf16 dense (no sparsity).
+        'A100': 312e12,
         # Consumer Blackwell (local dev / first-step verification box). bf16 dense
         # tensor throughput, no sparsity; consumer FP32-accumulate may run lower, so
         # MFU computed against this is approximate. Affects the MFU metric only, not
@@ -141,18 +148,21 @@ def detect_gpu_type() -> tuple[str, float]:
         'RTX 5090': 209.5e12,
     }
 
-    # Detect GPU type
-    for gpu_name, flops in gpu_specs.items():
-        if gpu_name in gpu_device_name:
-            return gpu_name, flops
+    # Match on a DIGIT BOUNDARY, not a bare substring. 'H20' is a substring of
+    # 'NVIDIA H200', so plain containment reported an H200's MFU against 296
+    # TFLOPS instead of ~989 — a silent 3.3x over-report, with the log calling the
+    # card an H20. A wrong hit is worse than a miss: the miss now degrades loudly,
+    # while the hit says nothing at all. Longest key first as a second guard, for
+    # the day someone adds both 'H100' and 'H100 NVL'.
+    for gpu_name in sorted(gpu_specs, key=len, reverse=True):
+        if re.search(rf"(?<![0-9A-Z]){re.escape(gpu_name)}(?![0-9])", gpu_device_name):
+            return gpu_name, gpu_specs[gpu_name]
 
-    # Unsupported GPU - raise error
-    supported_gpus = ', '.join(gpu_specs.keys())
-    raise ValueError(
-        f"Unsupported GPU type: {gpu_device_name}\n"
-        f"Currently supported GPUs: {supported_gpus}\n"
-        f"Please add your GPU type to detect_gpu_type() in trainer.py"
-    )
+    # Unknown GPU: train anyway, drop the MFU column.
+    print0(f"WARNING: unrecognised GPU {gpu_device_name!r} — training proceeds, but MFU "
+           f"cannot be computed and will print as n/a. Add its bf16 peak to gpu_specs in "
+           f"{__name__} to get MFU. Known: {', '.join(gpu_specs)}")
+    return gpu_device_name, None
 
 
 class Trainer:
@@ -284,7 +294,9 @@ class Trainer:
 
         # Auto-detect GPU type and get promised FLOPS
         self.gpu_type, gpu_flops = detect_gpu_type()
-        self.promised_flops_per_sec = gpu_flops * world_size
+        # None when the GPU is unrecognised — every consumer below treats that as
+        # "no MFU", never as zero (which would print an infinite MFU instead).
+        self.promised_flops_per_sec = gpu_flops * world_size if gpu_flops else None
 
         # Evaluation schedule: each evaluator answers should_eval(step) itself
         # (default: every interval_steps; or an explicit eval_at set, e.g. a
@@ -395,6 +407,8 @@ class Trainer:
             if step % self.log_every == 0 or step == self.max_steps - 1:
                 metrics = self._calculate_metrics(step, dt)
                 progress_str = self._get_progress_string(step)
+                mfu_str = (f"{metrics['mfu']:.2f}%" if metrics['mfu'] is not None
+                           else "n/a")
                 print0(
                     f"{progress_str} | "
                     f"loss: {debiased_smooth_loss:.6f} | "
@@ -402,7 +416,7 @@ class Trainer:
                     f"lrm: {lrm:.2f} | "
                     f"dt: {dt*1000:.0f}ms | "
                     f"tok/s: {metrics['tokens_per_sec']:,} | "
-                    f"mfu: {metrics['mfu']:.2f}% | "
+                    f"mfu: {mfu_str} | "
                     f"total time: {total_training_time/60:.2f}m"
                 )
                 # Debug: print optimizer state (disabled)
@@ -424,10 +438,11 @@ class Trainer:
                     "train/lrm": lrm,
                     "train/dt": dt,
                     "train/tok_per_sec": metrics['tokens_per_sec'],
-                    "train/mfu": metrics['mfu'],
                     "train/grad_norm": grad_norm,
                     "train/peak_memory_gb": self.get_max_memory() / 1024**3,
                 }
+                if metrics['mfu'] is not None:   # omit rather than log a null series
+                    log_data["train/mfu"] = metrics['mfu']
                 wandb_run.log(log_data)
 
             # Evaluation
@@ -512,7 +527,8 @@ class Trainer:
         tokens_per_sec = int(self.total_batch_size / dt) if dt > 0 else 0
         flops_so_far = self.num_flops_per_token * self.total_batch_size * step
         flops_per_sec = self.num_flops_per_token * self.total_batch_size / dt if dt > 0 else 0
-        mfu = 100 * flops_per_sec / self.promised_flops_per_sec
+        mfu = (100 * flops_per_sec / self.promised_flops_per_sec
+               if self.promised_flops_per_sec else None)
 
         return {
             'tokens_per_sec': tokens_per_sec,
@@ -760,7 +776,9 @@ class Trainer:
         print0(f"  final_lr_frac: {self.scheduler_config.get('final_lr_frac', 0.0)}")
         print0(f"Performance:")
         print0(f"  GPU type: {self.gpu_type}")
-        print0(f"  Promised FLOPS: {self.promised_flops_per_sec:e}")
+        promised = (f"{self.promised_flops_per_sec:e}" if self.promised_flops_per_sec
+                    else "unknown — GPU not in gpu_specs, MFU disabled")
+        print0(f"  Promised FLOPS: {promised}")
         print0(f"  Estimated FLOPs per token: {self.num_flops_per_token:e}")
         if self.evaluators:
             schedules = [f"eval_at<{len(ev.eval_at)} steps>" if ev.eval_at is not None

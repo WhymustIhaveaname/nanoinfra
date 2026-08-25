@@ -108,6 +108,81 @@ def build_evaluators(config, tokenizers, source_types, device_batch_size,
     return evaluators
 
 
+# FineWeb sample-10BT under this repo's tokenizer: the six documented shards hold
+# 6,275,704 rows and ~4.36B tokens (README "Data"), i.e. ~695 tokens per row. It
+# only has to turn a shard count into an epoch ratio, so a 10% error in it changes
+# nothing about the judgement it supports.
+TOKENS_PER_ROW = 695
+
+
+def _si(n):
+    """1.23B / 45.6M / 789K — a short run's budget must not print as 0.00B."""
+    for div, suf in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if n >= div:
+            return f"{n/div:.2f}{suf}"
+    return f"{n:.0f}"
+
+
+def _estimate_tokens(path):
+    """Rough token count for one FineWeb shard, from its footer only (no decode)."""
+    if not str(path).endswith(".parquet"):
+        return None
+    try:
+        import pyarrow.parquet as pq
+        return pq.ParquetFile(path).metadata.num_rows * TOKENS_PER_ROW
+    except Exception:
+        return None
+
+
+def report_token_supply(config, sources, max_steps, printer=print) -> None:
+    """Say how many epochs the run will actually take over the data on disk.
+
+    Another ruler that did not speak. The val split is declared by name and train
+    is `rest: true`, so the TRAIN set size is an emergent property of whatever
+    else is in base_data/ — declaring the ruler does not declare how much corpus
+    sits behind it. Download three shards instead of six and a single-epoch run
+    quietly becomes ~1.9 epochs: nothing errors, the loader simply wraps, and
+    every number afterwards is measured under conditions the docs do not
+    describe. That is the expensive kind of wrong — silent and hard to attribute.
+
+    Must be called AFTER the Trainer exists: with the default `max_steps: -1`
+    the budget is Chinchilla-derived and only resolved in Trainer.__init__.
+
+    Says nothing rather than guessing whenever it cannot be sure: a MIXTURE of
+    sources (each drawn at its own weight, so a pooled ratio is wrong for every
+    source in it), a corpus other than the one the per-row constant was measured
+    on, or a shard whose footer will not read. The count is an estimate anyway —
+    rows x a measured average — and labelled as one, because 1.9 vs 1.0 is the
+    judgement being supported and it does not need three digits.
+    """
+    if len(sources) != 1:
+        return
+    # TOKENS_PER_ROW is calibrated on FineWeb. Another parquet corpus with a
+    # different document length would be mis-sized by the same silent factor this
+    # function exists to expose, so it only speaks for the corpus it was measured
+    # on. Re-measure and widen the check deliberately, never by inheritance.
+    if sources[0].get("dataset") != "fineweb":
+        return
+    supply = 0
+    for path in (sources[0].get("files") or []):
+        n = _estimate_tokens(path)
+        if n is None:
+            return
+        supply += n
+    if not supply:
+        return
+    demand = max_steps * config["total_batch_size"]
+    epochs = demand / supply
+    printer("\n--- token supply (estimated) ---")
+    printer(f"  train tokens: need ~{_si(demand)}, have ~{_si(supply)} on disk "
+            f"-> {epochs:.2f} epoch(s)")
+    if epochs > 1.05:
+        printer(f"  NOTE: this run repeats the training data {epochs:.2f}x. If you expected a "
+                f"single epoch you are short of shards — see the \"Data\" section of "
+                f"exemplars/text_pretrain/README.md, and its data/download_shards.py.")
+    printer("--------------------------------\n")
+
+
 def report(config, sources, evaluators, printer=print) -> None:
     """Print training and evaluation rulers SIDE BY SIDE.
 

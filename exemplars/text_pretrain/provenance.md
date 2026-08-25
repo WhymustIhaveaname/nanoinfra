@@ -24,7 +24,7 @@ run's final-step eval — checkpoints read ~0.005–0.010 higher (the missing
 warmdown tail). The originally logged "bpb" column was bits-per-token
 (missing `token_bytes.pt` → silent ones fallback), since fixed.
 
-Full per-run metrics + val-CE trajectories: [`results/bracket.json`](results/bracket.json).
+Full per-run metrics + val-CE trajectories: [`example_results/bracket.json`](example_results/bracket.json).
 
 ## Verdict: `3e-4` wins — a clean U
 

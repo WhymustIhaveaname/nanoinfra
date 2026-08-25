@@ -95,8 +95,8 @@ def main():
             "checkpoint.save_dir": spec.ckpt_dir(parallel=args.parallel),
             "checkpoint.save_every": 2500,
             "checkpoint.keep_last_n": 2,
-            "evaluation.text.interval_steps": 500,
-            "evaluation.text.eval_tokens": 2097152,
+            "evaluation.interval_steps": 500,
+            "evaluation.eval_tokens": 2097152,
             "logging.log_every": 10,
         }
     overrides = spec.train_overrides(parallel=args.parallel, **stage) + args.overrides

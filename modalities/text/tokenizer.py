@@ -471,6 +471,15 @@ def get_tokenizer():
     if os.path.exists(rust_path):
         return RustBPETokenizer.from_directory(tokenizer_dir)
     if os.path.exists(hf_path):
+        # `tokenizers` is an optional extra, and the import above degrades to None
+        # rather than failing at import time. Say WHICH package is missing here:
+        # without this the next line raises AttributeError on NoneType, three
+        # frames away from anything that names the real cause.
+        if HFTokenizer is None:
+            raise ImportError(
+                f"found {hf_path}, which needs the `tokenizers` package — not installed. "
+                f"Either install it (pip install 'nanoinfra[hf-tokenizer]') or train the "
+                f"default artifact instead: python -m modalities.text.train_tokenizer")
         return HuggingFaceTokenizer.from_directory(tokenizer_dir)
     if tiktoken is not None:
         print(f"WARNING: no tokenizer artifact in {tokenizer_dir} — falling back to the "

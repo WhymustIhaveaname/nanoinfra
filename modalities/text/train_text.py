@@ -74,7 +74,8 @@ import modalities.control
 from modalities.assembler import build_layout
 from modalities.control import CONTROL_TOKENS, display_form, make_control_resolver
 from modalities.text import get_tokenizer
-from modalities.text.streams import build_evaluators, report, resolve_sources
+from modalities.text.streams import (build_evaluators, report,
+                                    report_token_supply, resolve_sources)
 
 # The orchestrator composes the source fragments of the mounted modalities.
 SOURCE_TYPES = {
@@ -236,6 +237,9 @@ def main(cfg: DictConfig) -> None:
         evaluators=evaluators,
         ddp=ddp,
     )
+    # After the Trainer, not before: with `max_steps: -1` the budget is
+    # Chinchilla-derived and does not exist until Trainer.__init__ resolves it.
+    report_token_supply(config, sources, trainer.max_steps, printer=print0)
 
     print0("Starting training...\n")
     trainer.train()
