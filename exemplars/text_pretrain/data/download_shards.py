@@ -18,8 +18,8 @@ Two uses, and the default serves the first:
 Downloads go through huggingface_hub.hf_hub_download into a _hf/ cache beside
 the shards, are verified readable, then moved into place.
 
-Run: .venv/bin/python exemplars/text_pretrain/data/download_shards.py
-     .venv/bin/python exemplars/text_pretrain/data/download_shards.py 006 007
+Run: .venv/bin/python -m exemplars.text_pretrain.data.download_shards
+     .venv/bin/python -m exemplars.text_pretrain.data.download_shards 006 007
 """
 import shutil
 import sys

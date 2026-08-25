@@ -47,15 +47,18 @@ CentOS 7 ships 4.8.5, for instance). Train with `use_compile=false` to skip it.
 
 ## Quickstart — the text exemplar
 
+Run these from the repo root: the exemplars are addressed as modules
+(`python -m exemplars.…`), which resolves them relative to the working directory.
+
 ```bash
 # 1 · fetch a few FineWeb shards (into outputs/base_data/)
-python exemplars/text_pretrain/data/download_shards.py
+python -m exemplars.text_pretrain.data.download_shards
 
 # 2 · train YOUR tokenizer on those shards (seconds; writes outputs/tokenizer/)
 python -m modalities.text.train_tokenizer
 
 # 3 · train the model (see the exemplar README for the full train / measure / sample recipe)
-CUDA_VISIBLE_DEVICES=0 python exemplars/text_pretrain/pretrain.py
+CUDA_VISIBLE_DEVICES=0 python -m exemplars.text_pretrain.pretrain
 ```
 
 Yes, you train the tokenizer yourself — it's a from-scratch framework all the way

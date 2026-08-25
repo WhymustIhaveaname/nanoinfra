@@ -53,12 +53,20 @@ different architecture, not a tweak of GPT.
 
 ```bash
 # once, FROM THE REPO ROOT: fetch a FineWeb shard (shared with the text exemplar)
-python exemplars/text_pretrain/data/download_shards.py
+python -m exemplars.text_pretrain.data.download_shards
 
 # then, from this directory
 python run.py     # trains modern + gpt2 (d6, minutes)
 python plot.py    # -> outputs/gpt2_vs_modern.png
 ```
+
+> **Why this one is `cd` + `python run.py`, while the exemplars are `python -m`.**
+> The scripts here import their siblings flatly (`import spec`), which resolves
+> because running a script puts its own directory on the path. That is deliberate:
+> this folder is meant to be copied — it lives at a different path in this repo,
+> in the public release, and in the ablation gallery — so an absolute import
+> naming any one of those would be wrong in the other two. The exemplars are not
+> copied that way and use absolute imports, like the rest of the tree.
 
 ## Result
 

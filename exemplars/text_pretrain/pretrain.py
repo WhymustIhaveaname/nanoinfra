@@ -17,9 +17,9 @@ orchestrator's default). See the README's multi-GPU section for the measured
 numbers on which to pick.
 
 Run (repo root):
-  CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/pretrain.py
-  .venv/bin/python exemplars/text_pretrain/pretrain.py --nproc 2 --parallel ddp
-  .venv/bin/python exemplars/text_pretrain/pretrain.py --nproc 2 --parallel ddp --smoke 30
+  CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m exemplars.text_pretrain.pretrain
+  .venv/bin/python -m exemplars.text_pretrain.pretrain --nproc 2 --parallel ddp
+  .venv/bin/python -m exemplars.text_pretrain.pretrain --nproc 2 --parallel ddp --smoke 30
 
 Trailing `key=value` arguments pass through to the orchestrator as Hydra
 overrides — `total_batch_size` is the interesting one for multi-GPU, because it
@@ -33,7 +33,7 @@ import os
 import subprocess
 import sys
 
-import spec
+from exemplars.text_pretrain import spec
 
 
 def launch(overrides, nproc):

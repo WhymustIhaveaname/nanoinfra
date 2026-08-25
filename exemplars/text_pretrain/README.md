@@ -33,21 +33,21 @@ assemble→train flow, open that file**; this project only picks knobs and drive
 From the repo root. One-time prerequisites (fresh clone):
 
 ```bash
-python exemplars/text_pretrain/data/download_shards.py   # FineWeb shards -> outputs/base_data/
+python -m exemplars.text_pretrain.data.download_shards   # FineWeb shards -> outputs/base_data/
 python -m modalities.text.train_tokenizer                # tokenizer artifact (seconds) -> outputs/tokenizer/
 ```
 
 ```bash
 # 1 · train the champion  (~4.4 h on one 5090; the checkpoint may already exist)
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/pretrain.py
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m exemplars.text_pretrain.pretrain
 
 # 2 · the compute-optimal scaling law — split the depths across both GPUs, then fit:
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/scaling.py run --depths 8 6
-CUDA_VISIBLE_DEVICES=1 .venv/bin/python exemplars/text_pretrain/scaling.py run --depths 4 3 2
-.venv/bin/python exemplars/text_pretrain/scaling.py fit        # -> outputs/ + a diff vs example_results/
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m exemplars.text_pretrain.scaling run --depths 8 6
+CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m exemplars.text_pretrain.scaling run --depths 4 3 2
+.venv/bin/python -m exemplars.text_pretrain.scaling fit        # -> outputs/ + a diff vs example_results/
 
 # 3 · sample from the champion
-CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/inference.py
+CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m exemplars.text_pretrain.inference
 ```
 
 ## Multi-GPU: ddp vs fsdp, measured
@@ -56,8 +56,8 @@ The launcher decides the world size — the orchestrator reads `RANK`, which onl
 torchrun sets — and `--parallel` picks the placement:
 
 ```bash
-.venv/bin/python exemplars/text_pretrain/pretrain.py --nproc 2 --parallel ddp             # full run
-.venv/bin/python exemplars/text_pretrain/pretrain.py --nproc 2 --parallel ddp --smoke 30  # 30-step smoke
+.venv/bin/python -m exemplars.text_pretrain.pretrain --nproc 2 --parallel ddp             # full run
+.venv/bin/python -m exemplars.text_pretrain.pretrain --nproc 2 --parallel ddp --smoke 30  # 30-step smoke
 ```
 
 `ddp` replicates the model on every rank and all_reduces gradients DURING

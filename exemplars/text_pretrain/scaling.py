@@ -27,9 +27,9 @@ compute-optimal object — at each compute budget several sizes compete and the
 envelope picks the single best.
 
 Run — split the depths across both GPUs, then collect + fit + plot:
-  CUDA_VISIBLE_DEVICES=0 .venv/bin/python exemplars/text_pretrain/scaling.py run --depths 8 6
-  CUDA_VISIBLE_DEVICES=1 .venv/bin/python exemplars/text_pretrain/scaling.py run --depths 4 3 2
-  .venv/bin/python exemplars/text_pretrain/scaling.py fit   # -> outputs/scaling.json + .png
+  CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m exemplars.text_pretrain.scaling run --depths 8 6
+  CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m exemplars.text_pretrain.scaling run --depths 4 3 2
+  .venv/bin/python -m exemplars.text_pretrain.scaling fit   # -> outputs/scaling.json + .png
 """
 import argparse
 import glob
@@ -43,8 +43,7 @@ from pathlib import Path
 
 import numpy as np
 
-import spec
-import scaling_fit
+from exemplars.text_pretrain import scaling_fit, spec
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent           # repo root — the orchestrator subprocess runs here

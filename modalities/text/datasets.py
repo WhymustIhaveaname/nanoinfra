@@ -55,7 +55,7 @@ def dataset_dir(ds_cfg: Dict[str, Any]) -> str:
         raise FileNotFoundError(
             f"dataset dir does not exist: {d}\n"
             f"(download shards there, e.g. "
-            f"`python exemplars/text_pretrain/data/download_shards.py 000 005`)"
+            f"`python -m exemplars.text_pretrain.data.download_shards 000 005`)"
         )
     return d
 

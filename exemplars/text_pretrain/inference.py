@@ -10,7 +10,7 @@ fills + validates the weights — no geometry is re-derived here. The
 
 Run (repo root):
   CUDA_VISIBLE_DEVICES=0 NANOINFRA_BASE_DIR=$PWD/outputs \
-    .venv/bin/python exemplars/text_pretrain/inference.py
+    .venv/bin/python -m exemplars.text_pretrain.inference
 """
 import glob
 import os
@@ -26,7 +26,7 @@ from modalities.assembler import build_layout
 from modalities.control import make_control_resolver
 from modalities.text import get_tokenizer
 
-import spec
+from exemplars.text_pretrain import spec
 
 
 def latest_ckpt():
