@@ -23,8 +23,12 @@ total_batch_size: 131072
 # they come from the assembled VocabLayout at runtime (the config cannot
 # disagree with the trained artifact).
 #
-# MFU expectations on this box (RTX 5090, from the 2026-07 audit; compiled,
-# single GPU, naive->liger head): d6 25->52% | d12 55->66% | d20 75->81%.
+# MFU expectations on this box (RTX 5090, single GPU, compiled trunk). These depend
+# on `head_ce` below as much as on depth, because the un-embedding is a third of the
+# parameters at d6 and nearly half at d2:
+#   naive 24% | liger 48% | compiled 61%   (d6)
+#   naive 53% | liger 63% | compiled 73%   (d12)
+# The default below is `naive`, i.e. the LEFT column.
 # Shallow models CANNOT reach high MFU (384-wide GEMMs cap at ~70% of peak;
 # the un-embedding outweighs the trunk) — depth is the main MFU lever.
 # ----------------------------------------------------------------------------
@@ -42,6 +46,15 @@ model:
 
 max_steps: -1                   # auto (Chinchilla, target_param_data_ratio) unless overridden
 use_compile: true               # audit: +19-34% tok/s; keep on
+
+# Which implementation computes the head's cross-entropy: naive | liger | compiled.
+# It matters most where the model is SMALL — a shallow trunk is outweighed by its own
+# un-embedding, so the head is a large fraction of the step (measured: d6 24.4% ->
+# 60.8% MFU across the three). There is deliberately no "auto": which arm a run takes
+# must not depend on what happens to be pip-installed, because the arms differ in
+# NUMERICS, not just speed. See core/training/model_setup.py for what each value
+# means and what each was measured at.
+head_ce: naive
 
 # Multi-GPU strategy: "ddp" replicates the model and reduces gradients during
 # backward, "fsdp" shards parameters. Ignored on one GPU. While the model FITS,

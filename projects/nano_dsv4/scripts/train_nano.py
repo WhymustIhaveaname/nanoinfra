@@ -162,6 +162,15 @@ def main():
                                          gpt_heads=args.gpt_heads)
     use_compile = args.arch == "gpt"
     setup = build_system(trunk_cls, trunk_config, use_compile=use_compile,
+                         # "compiled", not "liger": this file ships in the public
+                         # repo, where liger is an optional extra. The exemplars pin
+                         # liger because their recorded numbers came from it and so
+                         # they are entitled to demand it; this line has no such debt,
+                         # and compiled needs no extra package, is faster at every
+                         # depth measured, and is the arm numerically closest to
+                         # naive. (There is no "auto" to fall back through, by
+                         # design — see build_system's head_ce docstring.)
+                         head_ce="compiled",
                          seed=config.get("seed", 42))
     system = setup["system"]
     param_account(system.trunk, args.arch)

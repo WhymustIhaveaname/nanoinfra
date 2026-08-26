@@ -151,7 +151,7 @@ def main(cfg: DictConfig) -> None:
         n_layer=model_config["depth"], n_head=model_config["n_head"],
         n_kv_head=model_config["n_kv_head"], n_embd=model_config["dim"],
         n_token_types=layout.n_token_types)
-    setup = build_system(GPT, gpt_config, use_compile=False,
+    setup = build_system(GPT, gpt_config, use_compile=False, head_ce="liger",
                          seed=config.get("seed", 42), parallel="ddp")
     system, rank, world = setup["system"], setup["rank"], setup["world_size"]
     if config.get("use_compile", True):

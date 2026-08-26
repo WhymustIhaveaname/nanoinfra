@@ -5,14 +5,21 @@ What this project produces, through the blessed Orchestrator
 law, (3) inference. How the recipe's `lr_max=3e-4` was chosen is
 [`provenance.md`](provenance.md).
 
-**Fixed facts:** dim = depth×64, vocab 32768, seed 42, use_compile=true, liger
-fused-CE head, Chinchilla `target_param_data_ratio=20`. GPU: RTX 5090 (32 GB,
+**Fixed facts:** dim = depth×64, vocab 32768, seed 42, use_compile=true,
+`head_ce=liger`, Chinchilla `target_param_data_ratio=20`. GPU: RTX 5090 (32 GB,
 500 W-capped). FineWeb sample-10BT.
+
+> **`head_ce` is part of the recipe, not the environment.** It used to be neither
+> stated nor pinned — the head took liger whenever the package happened to be
+> installed. That is why the MFU below is the one number here nobody can source: the
+> package was uninstalled 2026-07-05, the champion trained 07-09, and it was
+> reinstalled 07-10, with no record either way. Every number on this page is now
+> stamped with the arm that produced it, and `spec.py` pins it.
 
 ## 1 · The champion (best recipe, trained once)
 
 **d12 · dim 768 · 135,268,608 params · Chinchilla 2.705B tokens · 20,640 steps ·
-lr 3e-4 · ~59 % MFU · final val CE 3.8101** — the shipped checkpoint
+lr 3e-4 · ~59 % MFU (⚠ arm unrecorded — see note above) · final val CE 3.8101** — the shipped checkpoint
 (step_020000, ≈97 % through warmdown) re-measures **1.236 bits/byte**
 (CE 3.8165) on the standard 2 M val window. (An earlier "bpb 5.497" figure
 was bits-per-token: `token_bytes.pt` was missing and the byte table silently
@@ -102,3 +109,58 @@ window), samples side by side. Big gaps are
 visible in generation (prompt-following, then coherence, emerge rung by rung);
 the last 0.015 is not — the loss metric resolves what the eye cannot. All
 checkpoints self-describe and load via `load_system`.
+
+## 4 · The head's three arms
+
+`head.loss` has three implementations, and they are three answers to one question —
+that `[B,T,V]` logits tensor: **pay** for it (`naive`), dodge it with a hand-written
+triton kernel (`liger`), or dodge it with inductor tiling the vocab dimension
+(`compiled`). Switch with one word:
+
+```bash
+.venv/bin/python -m exemplars.text_pretrain.pretrain head_ce=compiled
+```
+
+Measured on this recipe's family, one RTX 5090, seq 512, vocab 32768, audit batch
+sizes; each arm run twice on one RTX 5090, spread ≤1.1 %:
+
+| depth | naive | liger | compiled |
+|---|---|---|---|
+| d6 (dim 384) | 24.4 % | 47.5 % | **60.8 %** |
+| **d12 (this project)** | 53.5 % | 63.6 % | **73.1 %** |
+| d20 (dim 1280) | 72.8 % | 75.3 % | **80.1 %** |
+
+**And on §2's own ladder** — the five sizes trained for the scaling law, at that
+stage's fixed shape (seq 1024, dbs 32, tbs 32768), single GPU:
+
+| | params | head's share | naive | liger | compiled |
+|---|---|---|---|---|---|
+| d2 | 8.8 M | **48 %** | 6.6 % | 16.3 % | **33.9 %** |
+| d3 | 13.9 M | 45 % | 10.7 % | 27.5 % | **45.7 %** |
+| d4 | 19.9 M | 42 % | 15.5 % | 34.1 % | **53.5 %** |
+| d6 | 35.8 M | 35 % | 26.5 % | 50.6 % | **64.3 %** |
+| d8 | 58.7 M | 29 % | 37.5 % | 58.3 % | **70.0 %** |
+
+The ratio tracks the head's share of the parameters exactly, because it is the same
+fact stated twice. At d2 the un-embedding is *half the model*: the naive arm spends
+93 % of the card on a `[32, 1024, 32768]` fp32 tensor that two of the three arms never
+build. Worth knowing before you re-run the ladder — the curves in §2 cost what they
+cost partly because of this.
+
+Peak memory runs the other way — liger 3.32 / 6.79 / 10.99 GB against compiled
+5.17 / 7.54 / 11.16 at d6/d12/d20 — so liger stays the answer when memory, not
+throughput, is what binds. The head is a *large* fraction of a shallow model's step (a 384-wide trunk is
+outweighed by its own un-embedding), which is why the spread collapses with depth.
+
+Two things worth taking from this beyond the numbers:
+
+**The arms differ in numerics, not only speed.** At step 8 of a fixed run:
+naive 8.356687, compiled 8.356690, liger 8.358035. Compiled is the same math
+reassociated; liger's fused kernel reduces in a different order, and that 1.3e-3 is
+the size that once broke a 2-GPU loss-trajectory regression check at 5e-3. So this is a
+recipe knob, not a deployment detail — which is why there is deliberately no
+"auto": what a run computes must not depend on what is pip-installed.
+
+**This project pins `liger` because its numbers were measured there, not because it
+is the best arm.** `compiled` is faster at every depth and needs no optional package.
+Adopting it means re-pinning §1–§2, which is a measured decision, not a config edit.

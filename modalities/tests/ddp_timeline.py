@@ -150,7 +150,10 @@ def build(args):
     # the single-GPU arm gets exactly the same treatment so the compute being timed
     # is the same compute. (A whole-graph compile would have no per-block seams at
     # all — every gradient finalizes at the end of backward.)
-    setup = build_system(GPT, cfg, use_compile=False, seed=SEED, parallel="ddp")
+    # head_ce pinned for the same reason the compile mode is: this is an
+    # instrument, and its two arms must differ only in world size.
+    setup = build_system(GPT, cfg, use_compile=False, head_ce="liger",
+                         seed=SEED, parallel="ddp")
     system = setup["system"]
     compile_blocks(system.trunk)
 

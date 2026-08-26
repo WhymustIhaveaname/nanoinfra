@@ -48,6 +48,14 @@ def train_overrides(depth=DEPTH, lr=LR_MAX, parallel=None, **extra):
         "seed": SEED,
         "max_steps": -1,        # Chinchilla auto-size (token budget from DEPTH)
         "use_compile": "true",
+        # Which implementation computes the head's cross-entropy. core defaults to
+        # "naive" (it must: the default may not decide to compile, and it may not
+        # depend on an optional package). This project states its own, because the
+        # numbers in RESULTS.md were measured on this arm and the three arms differ
+        # in NUMERICS, not only speed. Requires `pip install -e '.[liger]'` — see
+        # README "Prerequisites". "compiled" is faster at every depth we measured
+        # (RESULTS.md §"The head's three arms"); switching means re-pinning.
+        "head_ce": "liger",
     }
     if parallel:
         ov["parallel"] = parallel   # multi-GPU placement; see pretrain.py --parallel

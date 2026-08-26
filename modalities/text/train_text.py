@@ -176,6 +176,7 @@ def main(cfg: DictConfig) -> None:
     whole_graph_compile = config.get('use_compile', True) and parallel != 'ddp'
     setup = build_system(trunk_cls, gpt_config, use_compile=whole_graph_compile,
                                                 parallel=parallel,
+                                                head_ce=config.get('head_ce', 'naive'),
                                                 seed=config.get('seed', 42))
     system = setup['system']
     rank = setup['rank']

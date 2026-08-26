@@ -144,7 +144,7 @@ def compile_blocks(trunk, dynamic=None):
 
 
 def build_system(trunk_cls, config, use_compile=True, head_softcap=15.0, seed=42,
-                 parallel="fsdp"):
+                 parallel="fsdp", head_ce="naive"):
     """
     Assemble the LMSystem (trunk + head) with FSDP and compile.
 
@@ -172,6 +172,35 @@ def build_system(trunk_cls, config, use_compile=True, head_softcap=15.0, seed=42
         trunk_cls: The trunk class to instantiate (the orchestrator's choice).
         config: trunk_cls's config instance (n_embd/vocab_size size the head)
         use_compile: Whether to compile the trunk (default: True)
+        head_ce: which implementation computes head.loss. Three answers to ONE
+            question — that [B,T,V] logits tensor: pay for it, dodge it with a
+            hand-written triton kernel, or dodge it with inductor. Not two axes:
+            compiling around liger is both pointless (its fusion is already done in
+            the kernel) and, measured, an InductorError. The head is a real fraction
+            of a SMALL model's step (the un-embedding outweighs a shallow trunk), so
+            this is a throughput knob, not a detail. Measured on one RTX 5090,
+            vocab 32768, seq 1024, batch 32 — MFU for naive/liger/compiled:
+                depth 2   6.6 / 16.3 / 33.9 %
+                depth 6  26.5 / 50.6 / 64.3 %
+                depth 8  37.5 / 58.3 / 70.0 %
+            One shape for all three depths, because the batch is half the answer and
+            a series measured at two shapes is not a series. The spread collapses
+            with depth because the head's share of the parameters does: 48% at d2,
+            29% at d8. Peak memory ranks the other way round — liger lowest, naive
+            highest, compiled between.
+            "naive" (default) F.cross_entropy over materialized [B,T,V] fp32 logits.
+                       The default is DERIVED, not preferred: compiling is the
+                       CALLER's decision, not core's (see compile_blocks below), so
+                       core's default cannot be a compiling one. It is also the only
+                       value that depends on no optional package — which environment
+                       a run lands on must never decide its loss trajectory.
+            "liger"    fused linear+CE; never materializes logits. Lowest memory.
+                       Errors if liger_kernel is absent rather than falling back —
+                       an arm that silently becomes another arm is not an arm.
+            "compiled" the same math as naive in one dynamo frame; inductor tiles the
+                       vocab dimension, so the logits never materialize. Fastest at
+                       every depth measured, and numerically the closest to naive.
+                       Works under all three placements (single / ddp / fsdp).
         head_softcap: logit softcap for the LM head
         seed: RNG seed for init + training reproducibility (config key `seed`)
         parallel: which MULTI-DEVICE strategy to use. Ignored on one device — whether
@@ -193,6 +222,9 @@ def build_system(trunk_cls, config, use_compile=True, head_softcap=15.0, seed=42
     # group and a full model build first.
     if parallel not in ("fsdp", "ddp"):
         raise ValueError(f"unknown parallel={parallel!r}; expected 'fsdp' or 'ddp'")
+    if head_ce not in ("naive", "liger", "compiled"):
+        raise ValueError(f"unknown head_ce={head_ce!r}; expected "
+                         "'naive', 'liger' or 'compiled'")
 
     # Initialize distributed environment
     is_distributed, rank, local_rank, world_size, device = init_distributed(seed=seed)
@@ -211,11 +243,15 @@ def build_system(trunk_cls, config, use_compile=True, head_softcap=15.0, seed=42
     head.to_empty(device=device)
     head.init_weights()
 
-    # --- Inject the behavior family ONCE, BEFORE shard (never at runtime). Liger
-    #     fused CE if available, else the naive LMHead path stays. ---
-    if LIGER_AVAILABLE and device.type == "cuda":
+    # --- Inject the behavior family ONCE, BEFORE shard (never at runtime). ---
+    if head_ce == "liger":
+        if not LIGER_AVAILABLE:
+            raise RuntimeError("head_ce='liger' but liger_kernel is not installed "
+                               "(pip install -e '.[liger]')")
         LigerLMHead.setup(head)
-        print0("Injected LigerLMHead (fused CE) into the head")
+        print0("Head: liger fused CE")
+    else:
+        print0(f"Head: naive CE{' (loss compiled)' if head_ce == 'compiled' else ''}")
 
     # --- Placement. Exactly three modes, and the branch says so ---------------
     # Note the two are on different axes: whether this is one device or many comes
@@ -281,6 +317,14 @@ def build_system(trunk_cls, config, use_compile=True, head_softcap=15.0, seed=42
         print0("Compiling trunk (JIT on first forward)...")
         system.set_compiled_trunk(torch.compile(trunk, dynamic=True))
 
+    if head_ce == "compiled":
+        # Bound as an INSTANCE attribute, which is also what keeps it out of
+        # state_dict (a compiled bound method is not a Module). Note this DOES reach
+        # eval: the fused evaluator calls head.loss directly. head.type_losses is the
+        # one path pinned back to the eager class method (see heads.py), so a per-type
+        # eval does not drag eval-shaped batches into dynamo.
+        head.loss = torch.compile(head.loss)
+
     return {
         'system': system,
         'device': device,
@@ -291,14 +335,14 @@ def build_system(trunk_cls, config, use_compile=True, head_softcap=15.0, seed=42
 
 
 def load_system(checkpoint_dir, trunk_cls=GPT, sequence_len=None,
-                use_compile=False, head_softcap=15.0):
+                use_compile=False, head_softcap=15.0, head_ce="naive"):
     """Assemble a runnable System straight from a self-describing checkpoint.
 
     The standard inference entry: blueprint from the artifact
     (config_from_meta reads meta.json['model_config'] into trunk_cls.Config),
     assembly through the SAME path training uses, weights via DCP (validated
     against the recorded config), eval() mode. Instantiation choices stay with
-    the caller: sequence_len (defaults to the trained value), use_compile,
+    the caller: sequence_len (defaults to the trained value), use_compile, head_ce
     head_softcap.
 
     trunk_cls is a CHECKED default: which code to load is the caller's
@@ -335,7 +379,7 @@ def load_system(checkpoint_dir, trunk_cls=GPT, sequence_len=None,
         raise ValueError(
             f"{checkpoint_dir} has no model_config in meta.json (checkpoint predates "
             f"self-description) — construct the config yourself and use load_model_only")
-    setup = build_system(trunk_cls, config, use_compile=use_compile,
+    setup = build_system(trunk_cls, config, use_compile=use_compile, head_ce=head_ce,
                          head_softcap=head_softcap)
     load_model_only(checkpoint_dir, setup['system'],
                     rank=setup['rank'], world_size=setup['world_size'])

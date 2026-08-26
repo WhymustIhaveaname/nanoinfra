@@ -141,7 +141,11 @@ def main(cfg: DictConfig) -> None:
         n_embd=model_config["dim"],
         n_token_types=layout.n_token_types,
     )
+    # head_ce reaches the AR arm only (autoregressive.py calls system.head.loss); the
+    # block-diffusion arm computes its own compiled CE over the masked positions and
+    # never touches the head module.
     setup = build_system(GPT, gpt_config, use_compile=False,     # compiled per block below
+                         head_ce="liger",
                          seed=config["seed"], parallel=config["parallel"])
     base, rank, world_size = setup["system"], setup["rank"], setup["world_size"]
     device = setup["device"]

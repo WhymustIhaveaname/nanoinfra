@@ -37,8 +37,17 @@ objectives — and everything they share is core.
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-pip install -e .
+pip install -e '.[liger]'
 ```
+
+The `liger` extra is what all three exemplars pin as their `head_ce` — the
+implementation their recorded numbers were measured on. It is an extra rather than a
+base dependency because it pins torch versions, and a framework you are meant to fork
+should not choose your torch for you. Plain `pip install -e .` installs and runs
+fine; the exemplars will then stop with a message naming this line, rather than
+quietly training a different arm than the one their numbers came from. See
+[`head_ce`](core/training/model_setup.py) for what the three arms are and what each
+costs.
 
 Requires Python ≥ 3.12 and a CUDA GPU for training. `use_compile` is on by
 default and torch.compile's inductor backend compiles C++17, so a **gcc ≥ 9**

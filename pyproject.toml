@@ -47,7 +47,7 @@ build-backend = "setuptools.build_meta"
 # Soft dependencies — both are guarded imports, so the base install runs without
 # them; add whichever you want:
 #   wandb        experiment logging (Trainer no-ops to a DummyWandb without it)
-#   liger-kernel fused cross-entropy kernel (guarded import in core/model/gpt.py)
+#   liger-kernel fused cross-entropy kernel (guarded import in core/model/heads.py)
 [project.optional-dependencies]
 wandb = ["wandb>=0.21.3"]
 liger = ["liger-kernel"]

@@ -252,7 +252,12 @@ def main(cfg: DictConfig) -> None:
         n_embd=config["model"]["dim"],
         n_token_types=layout.n_token_types,
     )
-    setup = build_system(GPT, gpt_config, use_compile=False,
+    # head_ce: this project's numbers were measured on the fused kernel. Training
+    # routes through LMSystem.loss -> head.loss, so the arm is a recipe fact here;
+    # state it rather than inherit core's naive default. (Its per-level evaluator
+    # does NOT go through head.type_losses — it calls system.head(...) + F.cross_entropy
+    # directly, so eval is arm-independent.)
+    setup = build_system(GPT, gpt_config, use_compile=False, head_ce="liger",
                          parallel=("ddp" if is_dist and config["parallel"] == "ddp"
                                    else config["parallel"]))
     system = setup["system"]

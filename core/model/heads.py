@@ -12,9 +12,15 @@ SEPARATE nn.Module from the trunk (the GPT body). This buys three things:
 
 Behavior families (naive CE / Liger fused CE / future band-factorized) are chosen by
 `__class__` INJECTION at assembly time (`XXXHead.setup(head)`), BEFORE `fully_shard`,
-once. Runtime never changes `__class__`. Entry points that touch head params outside
-the trunk forward (loss / logits / type_losses) are registered as FSDP forward
-methods AFTER shard.
+once. Runtime never changes `__class__`.
+
+One family is NOT a class: head_ce="compiled" keeps the naive class and binds a
+compiled `loss` as an INSTANCE attribute instead — `torch.compile` produces a
+callable, not a type, so there is nothing to inject. That asymmetry is why
+`type_losses` below reaches for `type(self).loss` rather than `self.loss`.
+
+Entry points that touch head params outside the trunk forward
+(loss / logits / type_losses) are registered as FSDP forward methods AFTER shard.
 
 FSDP2 timing rule (why the order matters): the `__class__` injection MUST happen
 BEFORE `fully_shard` — a post-shard `__class__` swap silently drops FSDP's dynamically
@@ -70,14 +76,32 @@ class LMHead(nn.Module):
         )
 
     def type_losses(self, hidden, targets, target_types, type_ids):
-        """Per-type CE losses {type_id: scalar} via masked targets (eval)."""
+        """Per-type CE losses {type_id: scalar} via masked targets (eval).
+
+        Calls `type(self).loss(self, ...)`, not `self.loss(...)` and not
+        `LMHead.loss(self, ...)`. Both details are load-bearing:
+
+          - `self.loss` would pick up whatever is bound as an INSTANCE attribute.
+            Two things bind one: head_ce="compiled" (a dynamo wrapper) and, under
+            FSDP, register_fsdp_forward_method. Reaching either from in here nests a
+            frame or a forward window inside the one type_losses is already running
+            in — untested, and this is an eval path not worth the risk.
+          - `LMHead.loss` would hard-bind the naive implementation, silently
+            downgrading a LigerLMHead's per-type eval to the unfused path (and
+            materializing [B,T,V] logits once per type id, which is the exact cost
+            liger exists to remove).
+
+        `type(self)` threads that needle: it skips the instance dict but still
+        resolves through the MRO, so a liger head gets liger — including after
+        fully_shard rewrites __class__ to an FSDP-mixed subclass.
+        """
         result = {}
         for tid in type_ids:
             masked = torch.where(
                 target_types == tid, targets,
                 torch.full_like(targets, VocabLayout.IGNORE_INDEX),
             )
-            result[tid] = self.loss(hidden, masked)
+            result[tid] = type(self).loss(self, hidden, masked)
         return result
 
 

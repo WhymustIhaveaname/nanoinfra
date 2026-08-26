@@ -1,8 +1,9 @@
 """Unit tests for pluggable heads: naive LMHead numerics + __class__ injection.
 
-The end-to-end snapshot covers the naive path through training, but with liger absent
-it never exercises the INJECTION mechanism. These tests pin the head's tensor
-contract and prove the __class__-injection pattern directly (no liger / FSDP needed).
+An end-to-end training run exercises whichever arm its recipe pins, and only on a box
+that has that arm's package installed. These tests pin the head's tensor contract and
+prove the __class__-injection pattern directly — no liger, no FSDP, no GPU — so the
+mechanism stays covered on CPU everywhere, including where the fused kernel is absent.
 """
 
 import torch
@@ -80,6 +81,54 @@ def test_class_injection_preserves_params_and_swaps_behavior():
     assert torch.equal(head.lm_head.weight, w_before)       # params untouched
     assert abs(head.loss(hidden, targets).item() - 2 * base) < 1e-5   # new behavior active
     assert torch.allclose(head(hidden), _ref_logits(head, hidden))    # inherited forward intact
+
+
+def test_type_losses_follows_the_injected_family():
+    """type_losses must reach the INJECTED loss, not LMHead's.
+
+    This pins a bug that shipped for exactly one afternoon. type_losses used to call
+    `self.loss(...)`; that was changed to dodge the instance attribute head_ce=
+    "compiled" binds — but the first attempt hard-bound `LMHead.loss`, which silently
+    downgraded a liger head's per-type eval to the unfused path. Wrong by ~1e-3 and
+    materializing [B,T,V] logits once per type id, with nothing to notice it.
+    """
+    head = LMHead(8, 16)
+
+    class DoubledHead(LMHead):
+        @classmethod
+        def setup(cls, h):
+            h.__class__ = cls
+
+        def loss(self, hidden, targets):
+            return 2.0 * LMHead.loss(self, hidden, targets)
+
+    DoubledHead.setup(head)
+    hidden = torch.randn(2, 4, 8)
+    targets = torch.randint(0, 16, (2, 4))
+    types = torch.zeros_like(targets)
+
+    got = head.type_losses(hidden, targets, types, [0])[0]
+    naive = LMHead.loss(head, hidden, targets)
+    assert abs(got.item() - 2 * naive.item()) < 1e-5, (
+        "type_losses took LMHead.loss instead of the injected subclass's")
+
+
+def test_type_losses_skips_an_instance_level_loss():
+    """...and must NOT reach a callable bound on the instance.
+
+    head_ce="compiled" and, under FSDP, register_fsdp_forward_method both bind one.
+    Entering either from inside type_losses nests a dynamo frame / forward window in
+    the one type_losses is already running in.
+    """
+    head = LMHead(8, 16)
+    head.loss = lambda *a, **k: torch.tensor(-999.0)      # what must NOT be called
+
+    hidden = torch.randn(2, 4, 8)
+    targets = torch.randint(0, 16, (2, 4))
+    types = torch.zeros_like(targets)
+
+    got = head.type_losses(hidden, targets, types, [0])[0]
+    assert got.item() != -999.0, "type_losses went through the instance attribute"
 
 
 if __name__ == "__main__":
