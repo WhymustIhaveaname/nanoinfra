@@ -6,6 +6,7 @@ import torch
 
 from core.evaluation import evaluate_loss
 from core.evaluation.evaluator import Evaluator
+from core.training.trainer import eval_is_due
 
 
 # ---------------------------------------------------------------------------
@@ -145,3 +146,37 @@ def test_evaluate_loss_with_weighted_loss_weights():
     assert abs(results["total_loss"] - (66.0 / 27.0)) < 1e-5
     assert abs(results["type_losses"][0] - 1.0) < 1e-5
     assert abs(results["type_losses"][1] - 2.5) < 1e-5
+
+
+# ---------------------------------------------------------------------------
+# eval_is_due: the training loop's gate. Zero evaluators must mean no evaluation
+# even at the last step — the loop used to take that branch regardless and print a
+# bare `Step NNNNN |` with an empty result dict behind it.
+# ---------------------------------------------------------------------------
+
+def _every(n):
+    ev = Evaluator()
+    ev.interval_steps = n
+    return ev
+
+
+def test_eval_is_due_no_evaluators_is_never_due():
+    for last in (False, True):
+        assert not eval_is_due([], step=0, last_step=last)
+        assert not eval_is_due(None, step=7, last_step=last)
+
+
+def test_eval_is_due_follows_the_evaluators_cadence():
+    evs = [_every(250)]
+    assert eval_is_due(evs, step=0, last_step=False)      # step 0: the baseline
+    assert eval_is_due(evs, step=250, last_step=False)
+    assert not eval_is_due(evs, step=251, last_step=False)
+
+
+def test_eval_is_due_last_step_overrides_cadence():
+    """A run that evaluates at all should end with a final number."""
+    assert eval_is_due([_every(250)], step=251, last_step=True)
+
+
+def test_eval_is_due_any_evaluator_is_enough():
+    assert eval_is_due([_every(1000), _every(3)], step=3, last_step=False)

@@ -158,3 +158,62 @@ class BlockDiffusionSystem(LMSystem):
         # noise_seed comes from the rows in this micro-batch (see dataset.py), so the
         # masks are a function of the data rather than of the step index or the rank.
         return self.objective.loss(self, batch["idx"], batch["noise_seed"])
+
+    def estimate_flops(self):
+        """FLOPs/token, corrected — this objective breaks LMSystem's contract twice.
+
+        The contract (core/model/system.py) is that every position counted in
+        total_batch_size costs the same. Block diffusion computes on a DIFFERENT set
+        of positions than it is charged for, in two independent ways:
+
+          head       runs only where a token was masked. Charged for all 2*row_len
+                     positions, it runs on E[t] * in-block of them — about 22% here.
+          attention  runs under `train_block_mask`, not dense causal over
+                     sequence_len, which is what the trunk's formula assumes.
+
+        Left uncorrected the two together read 1.78x high, and MFU printed 101.6% —
+        above the card's physical ceiling, which is the only reason anyone looked.
+        Corrected it reads ~57%, and that gap is the point: 101.6% says the card is
+        saturated and there is nothing to win, 57% says a third of it is idle.
+
+        The head correction shrinks as the trunk grows; the attention one does NOT.
+        At a 129-frame window the head is down to ~14% of the total while attention
+        is ~71%, and the combined error is still ~1.6x. So this is not a small-model
+        wart to outgrow.
+
+        On the two denominators, because it is easy to get wrong (it was): the trunk's
+        attention term counts a FULL sequence_len x sequence_len grid — the PaLM
+        appendix-B / nanoGPT convention, which does not credit the causal half either.
+        `BlockMask.sparsity()` also reports against the full grid, so the two match and
+        `density` is the right multiplier. Measuring the mask against a CAUSAL grid
+        instead gives 0.64 rather than 0.33 and understates the correction by ~2x.
+
+        One consequence to state rather than hide: this MFU is now physically true,
+        while the repo's dense-causal numbers carry the convention's overcount. At
+        text's sequence lengths that overcount is ~3% of the total and nobody cares;
+        here it would have been 3x on the attention term. So do not read this number
+        against the text exemplar's and conclude anything — MFU was never comparable
+        across architectures anyway (a different architecture trades arithmetic
+        intensity for capability), and now it is not comparable across conventions
+        either.
+
+        Both factors are EXPECTATIONS, not per-step truths: t is redrawn every step,
+        so the exact figure moves batch to batch. MFU is a display metric and an
+        expectation is the right resolution for it — nothing downstream consumes this.
+        """
+        cfg = self.trunk.config
+        head = 6 * sum(p.numel() for p in self.head.parameters())
+        # Mirrors the attention term in GPT.estimate_flops (core/model/gpt.py). It is
+        # spelled out again because it has to be SUBTRACTED before being rescaled, and
+        # the trunk hands back only the sum. If that formula changes, this changes.
+        q = cfg.n_embd // cfg.n_head
+        attn = 12 * cfg.n_layer * cfg.n_head * q * cfg.sequence_len
+        obj = self.objective
+
+        e_t = 0.5 * (obj.t_min + obj.t_max)                 # t ~ U[t_min, t_max]
+        in_block = int((obj.blk > 0).sum())
+        masked_frac = e_t * in_block / cfg.sequence_len     # sequence_len == 2*row_len
+        density = 1.0 - obj.block_mask.sparsity() / 100.0   # fraction of blocks kept
+
+        dense = super().estimate_flops()                    # trunk matmul + attn + head
+        return (dense - attn - head) + attn * density + head * masked_frac

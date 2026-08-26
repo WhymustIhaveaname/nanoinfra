@@ -235,12 +235,20 @@ def main(cfg: DictConfig) -> None:
     train_src = make_source(mode, cache, config, tokenizers, "train", seq_len, rank, world)
     loader = SourceLoader(train_src, config["device_batch_size"], layout)
 
+    # An empty list is what the Trainer reads as "do not evaluate" — it is handed a
+    # LIST, so an empty one already says it and core has no evaluation on/off key of
+    # its own, by design. Two ways to end up with one here: asked for
+    # (`evaluation.enabled=false`, for throughput benchmarks and smoke runs), or
+    # forced (no val cache on disk).
     evaluators = []
-    try:
-        val_src = make_source(mode, cache, config, tokenizers, "val", seq_len, 0, 1)
-        evaluators.append(SupervisedCEEvaluator(config["evaluation"], val_src, layout))
-    except FileNotFoundError as e:
-        print0(f"  no val cache ({e}) — training without evaluation")
+    if not config["evaluation"].get("enabled", True):
+        print0("  evaluation disabled (evaluation.enabled=false)")
+    else:
+        try:
+            val_src = make_source(mode, cache, config, tokenizers, "val", seq_len, 0, 1)
+            evaluators.append(SupervisedCEEvaluator(config["evaluation"], val_src, layout))
+        except FileNotFoundError as e:
+            print0(f"  no val cache ({e}) — training without evaluation")
 
     # --- model -----------------------------------------------------------------
     gpt_config = GPTConfig(

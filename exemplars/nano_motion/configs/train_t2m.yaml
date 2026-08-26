@@ -74,6 +74,10 @@ optimizer:
     warmup_steps: 300
 
 evaluation:
+  enabled: true                 # false = build no evaluators at all. The Trainer takes
+                                #   a LIST, so an empty one IS the off switch; core has
+                                #   no evaluation flag of its own, by design.
+                                #   For throughput benchmarks and smoke runs.
   interval_steps: 1000
   n_batches: 20
   batch: 8

@@ -36,7 +36,18 @@ from core.tokenization.vocab_layout import VocabLayout
 
 try:
     from liger_kernel.transformers import LigerFusedLinearCrossEntropyLoss
-except ImportError:
+except Exception:                       # noqa: BLE001 — deliberately broad, see below
+    # NOT just ImportError. `liger_kernel.transformers` runs @triton.autotune at
+    # import time, which wants a live Triton driver; on a machine with none — a
+    # cluster login node, say — it raises `RuntimeError: 0 active drivers`, which
+    # sails straight through an ImportError guard and takes `import core.model.heads`
+    # down with it. Reported from a CentOS 7 / A100 deployment, 2026-08-26.
+    #
+    # A broad except at an optional-import site is only safe because of what the
+    # flag now means downstream: head_ce="liger" RAISES when this is False, it does
+    # not quietly become another arm. Before that was true, swallowing everything
+    # here would have meant a login-node quirk silently changing which kernel a
+    # training run used.
     LigerFusedLinearCrossEntropyLoss = None
 
 LIGER_AVAILABLE = LigerFusedLinearCrossEntropyLoss is not None

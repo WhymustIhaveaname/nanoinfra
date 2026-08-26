@@ -189,7 +189,15 @@ def main(cfg: DictConfig) -> None:
     print0(f"\ndata:  {train_set}\n       {val_set}\n       {dataloader}")
 
     # --- the ruler -------------------------------------------------------------
-    if obj_name == "diffusion":
+    # `evaluation.enabled=false` builds no evaluators at all, which is what the
+    # Trainer reads as "do not evaluate" — it is handed a LIST, and an empty one
+    # already says it, and core has no evaluation on/off key of its own by design.
+    # Wanted for throughput benchmarks and smoke runs, where
+    # a validation pass in the middle is not part of what is being measured.
+    if not config["evaluation"].get("enabled", True):
+        evaluators = []
+        print0("eval:  disabled (evaluation.enabled=false)")
+    elif obj_name == "diffusion":
         evaluators = [NELBOEvaluator(
             objective, val_set, rows, n_rows=config["evaluation"]["val_rows"],
             t_grid=config["evaluation"]["t_grid"], batch=config["evaluation"]["batch"],
@@ -199,7 +207,8 @@ def main(cfg: DictConfig) -> None:
             objective, val_set, rows, n_rows=config["evaluation"]["val_rows"],
             batch=config["evaluation"]["batch"],
             interval_steps=config["evaluation"]["interval_steps"], device=device)]
-    print0(f"eval:  {evaluators[0].describe()}")
+    if evaluators:
+        print0(f"eval:  {evaluators[0].describe()}")
 
     # --- gradient synchronization (explicit; the Trainer calls it in the step) --
     optimizers = create_optimizers(system, config["optimizer"], world_size=world_size)
@@ -225,7 +234,10 @@ def main(cfg: DictConfig) -> None:
     print0("\nStarting training...\n")
     trainer.train()
     print0("\n" + "=" * 80)
-    print0(f"✓ train_wm completed — best {evaluators[0].metric} {evaluators[0].best:.4f}")
+    if evaluators:
+        print0(f"✓ train_wm completed — best {evaluators[0].metric} {evaluators[0].best:.4f}")
+    else:
+        print0("✓ train_wm completed (no evaluation — evaluation.enabled=false)")
     print0("=" * 80)
 
 

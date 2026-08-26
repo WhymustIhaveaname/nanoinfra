@@ -33,15 +33,15 @@ assemble→train flow, open that file**; this project only picks knobs and drive
 From the repo root. One-time prerequisites (fresh clone):
 
 ```bash
-pip install -e '.[liger]'                                # this project's head_ce arm (see below)
 python -m exemplars.text_pretrain.data.download_shards   # FineWeb shards -> outputs/base_data/
 python -m modalities.text.train_tokenizer                # tokenizer artifact (seconds) -> outputs/tokenizer/
 ```
 
-The `liger` extra is a real prerequisite here, not a nice-to-have: `spec.py` pins
-`head_ce=liger`, and a missing package now fails loudly instead of quietly training a
-different arm. Which arm you take changes the numbers in [`RESULTS.md`](RESULTS.md) —
-see "The head's three arms" there.
+Plus the `liger` extra — a real prerequisite here rather than a nice-to-have, so
+install with the `'.[liger]'` form of whichever install line the root README gave you.
+`spec.py` pins `head_ce=liger`, and a missing package now fails loudly instead of
+quietly training a different arm. Which arm you take changes the numbers in
+[`RESULTS.md`](RESULTS.md) — see "The head's three arms" there.
 
 ```bash
 # 1 · train the champion  (~4.4 h on one 5090; the checkpoint may already exist)

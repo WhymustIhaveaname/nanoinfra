@@ -35,17 +35,31 @@ objectives — and everything they share is core.
 ## Install
 
 ```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -e '.[liger]'
+# recommended  (uv: https://docs.astral.sh/uv/ , or `pip install uv`)
+uv venv && uv pip install -e '.[liger]'
+
+# or, without uv
+python -m venv .venv && . .venv/bin/activate && pip install -e '.[liger]'
 ```
+
+**uv is recommended for a reason other than speed.** It resolves against platform
+tags, so on an older glibc it picks package versions that ship a wheel your machine
+can use. pip resolves newest-first and only discovers the mismatch when the source
+build fails — and that failure names `cython`, or `rustc`, neither of which points at
+glibc. On CentOS 7 (glibc 2.17, still common on academic clusters) `pip install -e .`
+cannot finish without hand-written constraints, and every new package you add can
+reintroduce the problem; `uv pip install -e .` needs none. One caveat: if the machine
+has no suitable interpreter, `uv venv` fetches one from GitHub, which a firewalled
+network will not allow — supply your own instead, with
+`uv venv --python /path/to/python3.12`.
 
 The `liger` extra is what all three exemplars pin as their `head_ce` — the
 implementation their recorded numbers were measured on. It is an extra rather than a
-base dependency because it pins torch versions, and a framework you are meant to fork
-should not choose your torch for you. Plain `pip install -e .` installs and runs
-fine; the exemplars will then stop with a message naming this line, rather than
-quietly training a different arm than the one their numbers came from. See
+base dependency because nothing in the framework's default path needs it: core's
+`head_ce` defaults to `naive`, which depends on no optional package and runs
+anywhere. Plain `pip install -e .` installs and runs fine; the exemplars will then
+stop with a message naming this line, rather than quietly training a different arm
+than the one their numbers came from. See
 [`head_ce`](core/training/model_setup.py) for what the three arms are and what each
 costs.
 
@@ -53,6 +67,12 @@ Requires Python ≥ 3.12 and a CUDA GPU for training. `use_compile` is on by
 default and torch.compile's inductor backend compiles C++17, so a **gcc ≥ 9**
 toolchain has to be on PATH (set `CC`/`CXX` if the system compiler is older —
 CentOS 7 ships 4.8.5, for instance). Train with `use_compile=false` to skip it.
+
+`torch>=2.6` is a floor, not a pin — a fresh install resolves to whatever is current,
+which need not match the version an exemplar's recorded numbers came from (this tree
+develops against 2.12.1). Expect small numeric differences from the numbers in each
+`RESULTS.md`. That is deliberate: a framework you are meant to fork should not choose
+your torch for you.
 
 ## Quickstart — the text exemplar
 

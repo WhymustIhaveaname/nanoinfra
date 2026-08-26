@@ -165,6 +165,30 @@ def detect_gpu_type() -> tuple[str, float | None]:
     return gpu_device_name, None
 
 
+def eval_is_due(evaluators, step, last_step) -> bool:
+    """Whether the training loop should evaluate at this step.
+
+    Zero evaluators means no — including at the last step. That guard is not
+    cosmetic: with evaluation switched off, the loop used to take the last-step
+    branch anyway, get an empty result dict back, and print a bare `Step 00003 |`
+    with nothing after it.
+
+    Note what is NOT here: an `evaluation.enabled` config key. The Trainer is handed
+    a LIST of evaluators, so an empty one already says "do not evaluate", and that
+    list is the orchestrator's to build. checkpoint and profiling have config flags
+    because they have no such list — there is no way to hand the Trainer zero
+    checkpointers, so a flag is their only way to say it.
+
+    Last step is unconditional otherwise: a run that evaluates at all should end with
+    a final number, whatever the cadence says. Step 0 also always fires, because
+    `should_eval` is `step % interval == 0` — that is deliberate, it is the
+    before-training baseline, not an accident of the modulo.
+    """
+    if not evaluators:
+        return False
+    return last_step or any(ev.should_eval(step) for ev in evaluators)
+
+
 class Trainer:
     """
     Single-stage trainer for GPT models.
@@ -447,7 +471,7 @@ class Trainer:
 
             # Evaluation
             last_step = (step == self.max_steps - 1)
-            if last_step or any(ev.should_eval(step) for ev in self.evaluators):
+            if eval_is_due(self.evaluators, step, last_step):
                 eval_results = self._evaluate(step, force=last_step)
                 metrics = self._calculate_metrics(step, dt)
                 eval_str = " | ".join(

@@ -62,6 +62,31 @@ class LMSystem(nn.Module):
         """FLOPs/token for MFU: the trunk knows its own formula (architecture
         fact — core must not peek trunk internals); the head is a plain matmul
         (6 * params). Sum is numerically identical to the old system-level
-        formula 6*(all_params - wte) + attention term."""
+        formula 6*(all_params - wte) + attention term.
+
+        CONTRACT, and it is a real one: this returns ONE number, and the Trainer
+        multiplies it by total_batch_size. That is only the truth if EVERY position
+        counted in total_batch_size costs the same — i.e. every position goes through
+        the trunk, attention is dense causal over sequence_len, and every position
+        goes through the head.
+
+        A System that breaks any of the three MUST override this. Two ways to break
+        it, and the second does not shrink as the model grows:
+          - the head runs on a SUBSET of positions (masked prediction, a sliced head)
+            -> the head term is overcharged by the inverse of that fraction;
+          - attention runs under a block/sparse mask -> the attention term is
+            overcharged by the inverse of the mask density. This one gets WORSE with
+            sequence length, because attention is a growing share of the total.
+        A worked override is exemplars/nano_world_model's block-diffusion System,
+        which breaks both. Left uncorrected there, MFU read 101.6% — above the card's
+        physical ceiling, which is how the violation was noticed at all.
+
+        Separately, and NOT something to correct: the trunk's attention term follows
+        the PaLM/nanoGPT convention of charging the full sequence length, so it does
+        not credit the causal half. That is ~3-5% here, it is shared by every dense
+        causal model, and it is what makes these numbers comparable to published ones.
+        See GPT.estimate_flops for the split between "shared constant, leave it" and
+        "varies per model, correct it".
+        """
         head_flops = 6 * sum(p.numel() for p in self.head.parameters())
         return self.trunk.estimate_flops() + head_flops

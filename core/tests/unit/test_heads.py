@@ -131,6 +131,38 @@ def test_type_losses_skips_an_instance_level_loss():
     assert got.item() != -999.0, "type_losses went through the instance attribute"
 
 
+def test_liger_guard_survives_a_non_import_error():
+    """The optional-liger guard must catch more than ImportError.
+
+    `liger_kernel.transformers` runs @triton.autotune at import time, so on a machine
+    with no Triton driver it raises RuntimeError, not ImportError. An ImportError-only
+    guard lets that through and `import core.model.heads` dies — on a cluster login
+    node, which is exactly where people run import-level checks.
+
+    Reloading the module is the only way to exercise an import-time guard, so this
+    restores it afterwards: later tests (and other modules holding LMHead) must keep
+    seeing the same class objects.
+    """
+    import builtins
+    import importlib
+    import core.model.heads as heads_mod
+
+    real_import = builtins.__import__
+
+    def raising_import(name, *args, **kwargs):
+        if name == "liger_kernel.transformers":
+            raise RuntimeError("0 active drivers ([]). There should only be one.")
+        return real_import(name, *args, **kwargs)
+
+    try:
+        builtins.__import__ = raising_import
+        reloaded = importlib.reload(heads_mod)
+        assert reloaded.LIGER_AVAILABLE is False
+    finally:
+        builtins.__import__ = real_import
+        importlib.reload(heads_mod)          # put the real classes back
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

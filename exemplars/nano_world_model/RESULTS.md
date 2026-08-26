@@ -69,6 +69,28 @@ machinery, 3D rope, action table v2. Corpora differ from yours, and **NELBO is
 corpus-relative — never compare absolute numbers across corpora**; what should
 reproduce is the shape and the regime effects.
 
+### Why the volume unit below is "supervised tokens", not steps
+
+A step of this model touches three different counts, and only one of them is
+training volume:
+
+| | what it counts | 17-frame recipe |
+|---|---|---|
+| `total_batch_size` (core's) | sequence positions: clean stream + noised stream + pad + the given frame | 2816 / row |
+| row length | one row | 1408 |
+| **supervised tokens** | **positions actually predicted** | **1024 / row** |
+
+The ratio between them is not a constant — it moves with window length. So a curve
+plotted against steps, or against `total_batch_size`, compares nothing once two runs
+have different windows, and comparing a 17-frame run with a 129-frame one is exactly
+what this project exists to do. The research twin learned this the hard way: a
+two-nat discrepancy that took a long time to explain had a steps-as-volume comparison
+as its final wrong turn.
+
+So: **`supervised = rows x n_blocks x codes_per_frame`** (1024 per row here), and every
+number below is quoted per that. Core cannot compute it for you — `total_batch_size` is
+the only volume it knows, and for this objective that is the wrong one.
+
 | leg | regime | val NELBO |
 |---|---|---|
 | 17f from scratch | b32 rows, lr 3e-4, 57k steps, constant LR | ~5.16 at end |

@@ -364,6 +364,23 @@ class GPT(nn.Module):
         6 * matmul-params + attention term; wte is a lookup, not a matmul,
         so its params are excluded (type_emb kept for parity with the
         historical system-level formula).
+
+        The attention term is `12 * L*H*Q*T` with T the FULL sequence length — the
+        PaLM appendix-B / nanoGPT convention. It charges every query for all T keys,
+        so it does NOT credit the causal half a decoder actually skips: as physics it
+        overstates attention by about 2x. That is deliberate and it is what every
+        published MFU number does, so keeping it is what makes ours comparable to
+        theirs. The cost is small and constant here — 2.9% of the total at depth 20,
+        4.1% at the 135M champion, 5.4% on the scaling ladder — and being constant it
+        cancels out of every internal comparison (arms, depths, placements).
+
+        Where it stops being small is STRUCTURAL sparsity, which varies per model
+        instead of being shared by all of them: a block or sliding-window mask can
+        leave a third of the pairs, and then this term is 3x the truth rather than 2x,
+        and it grows with sequence length. A System whose attention is masked that way
+        should correct for it — see LMSystem.estimate_flops's contract and the worked
+        override in exemplars/nano_world_model's block-diffusion System, where
+        uncorrected MFU read 101.6%, i.e. past the card's physical ceiling.
         """
         nparams = sum(p.numel() for p in self.parameters())
         nparams_embedding = self.transformer.wte.weight.numel()
