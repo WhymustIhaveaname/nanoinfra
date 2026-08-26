@@ -165,6 +165,13 @@ class T2MDataSource(DataSource):
                                     f"exemplars/nano_motion/data/encode.py first")
         d = np.load(cache, allow_pickle=True)
         codes_list, caps_list = list(d["codes"]), list(d["captions"])
+        # `limit` caps how many CLIPS are read. Building every pair means BPE-encoding
+        # every caption up front — 37 s for the 450k-pair Bones cache — which is right
+        # for training and wrong for a browser or a test that needs a handful of real
+        # rows. Absent, nothing changes.
+        limit = config.get("limit")
+        if limit:
+            codes_list, caps_list = codes_list[:int(limit)], caps_list[:int(limit)]
 
         toks, lw, attn = [], [], []
         n_pairs = 0

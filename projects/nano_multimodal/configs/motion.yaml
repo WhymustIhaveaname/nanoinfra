@@ -1,0 +1,98 @@
+# motion.yaml — line 2 of 3. Diff against text.yaml.
+
+defaults:
+  - base
+  - _self_
+
+line: motion
+
+# 1. WHICH BANDS. [text, control, motion] -> vocab 33,280.
+#    Text is here because the caption is the conditioning input; the motion band's
+#    width (512) is read off the CODEC at assembly time, never written down — the
+#    codec decides how many distinct codes exist, and a band that reserves the wrong
+#    number puts motion tokens on top of whatever follows.
+bands: [text, control, motion]
+
+model:
+  depth: 6             # small ON PURPOSE. Bones-SEED holds 30.4M supervised motion
+  dim: 384             # tokens per epoch; a 40M d6 wants ~800M by Chinchilla, so the
+  n_head: 3            # corpus is the ceiling here. Measured: d12 floors at step
+                       # 5,500 and drifts up, d6 is still descending at 16,000 and
+                       # is never beaten. See PLAN.md.
+  n_kv_head: ${model.n_head}
+
+sequence_len: 256
+max_steps: 20000
+
+# 32 rows x 256 = 8,192 tokens per step. Not inherited from anywhere: this is what the
+# runs behind RESULTS were measured at, and the val floor it reaches is the number the
+# checkpoint picker uses.
+device_batch_size: 16
+total_batch_rows: 32
+
+# ON THIS LINE THE BEST CHECKPOINT IS NOT THE LAST ONE, and the default retention
+# deletes it. Measured on the two runs behind RESULTS: d12 reaches val CE 2.3811 at
+# step 5,500 — a quarter of the way in — and then drifts to 2.6943 by step 22,000,
+# so `keep_last_n: 2` would keep two of its WORST checkpoints and throw its best one
+# away. (d6 does not turn around inside 16,000 steps: 2.384 at 15,500, 2.3685 at
+# 15,999, still descending. The retention hazard is real on the bigger model, and
+# the recipe has to survive both.) Save often and keep everything; a motion
+# checkpoint is small, and inference.checkpoints() picks by val CE rather than by
+# recency precisely because of this shape.
+checkpoint:
+  save_every: 500
+  keep_last_n: -1
+
+optimizer:
+  lr_max: 3.0e-4
+
+data:
+  sequence_len: ${sequence_len}
+  # 3. HOW THE ROW IS LAID OUT.
+  recipes:
+    t2m:
+      template: [bos, text_start, text_tokens, text_end,
+                 motion_start, motion_tokens, motion_end, eos]
+      # 4. WHICH POSITIONS CARRY LOSS. The motion half only — the model is not being
+      #    taught to write captions, and supervising them would spend capacity on it.
+      #    Same mechanism as the video line's: the source writes loss_weights, the
+      #    loader turns weight-0 positions into IGNORE_INDEX, fused CE skips them.
+      supervise: [motion_start, motion_tokens, motion_end, eos]
+  sources:
+    # 2. WHERE THE DATA COMES FROM. Pre-encoded (caption, codes) pairs — the codec
+    #    and the cache are given, so this line never trains a tokenizer.
+    #
+    #    Bones-SEED: 128,679 clips / 450,594 (caption, motion) pairs, encoded by
+    #    rot139_kin_fsq2 — the pair the archived gallery used, and the only one on the
+    #    shelf that adds no jitter (0.244 against the raw features' 0.250, and 3.67 cm
+    #    root-relative MPJPE). See spec.MOTION_CODEC for the full cross-table.
+    #
+    #    THE COST, and it should be said in class: these captions are TEMPLATE
+    #    generated ("A person quickly hops forward on their right foot."), not written
+    #    by hand. The alternative — HumanML3D, with real human captions — is four
+    #    times shakier before any codec touches it, because it is real mocap and this
+    #    is SOMA-retargeted synthesis. Smooth motion won, because a student judging
+    #    "does that look like a person" cannot see past shaking.
+    #
+    #    This cache carries no .json sidecar, so `codec:` below is the declaration and
+    #    tests/test_motion_cache.py is what actually checks it — by decoding rows and
+    #    looking at the body, not at a tag.
+    - type: t2m
+      cache: t2m_bones_train.npz
+      codec: rot139_kin_fsq2
+      split: train
+      recipe: t2m
+      weight: 1.0
+      max_text_tokens: 32
+  # The val counterpart is DECLARED, never derived by string substitution. A
+  # validation set that is guessed at is a ruler nobody audited.
+  val_sources:
+    - type: t2m
+      cache: t2m_bones_val.npz
+      codec: rot139_kin_fsq2
+      split: val
+      recipe: t2m
+      weight: 1.0
+      max_text_tokens: 32
+
+metric: val/motion_ce

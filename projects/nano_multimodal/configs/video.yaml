@@ -1,0 +1,104 @@
+# video.yaml — line 3 of 3. Diff against text.yaml and motion.yaml.
+#
+# This is a world model: given what it has seen and the buttons pressed, what does
+# the world look like next. It is ALSO a plain autoregressive model over integers —
+# no block diffusion, no 3D rope, no custom attention mask. All three lines shift
+# by one and take next-token cross-entropy. The world-model-ness lives entirely in
+# how the row is built and which positions carry loss.
+
+defaults:
+  - base
+  - _self_
+
+line: video
+
+# 1. WHICH BANDS. [control, video, action] -> vocab 64,037.
+#    NO TEXT BAND: this model cannot emit a word, so 32,750 un-embedding columns for
+#    words would be dead weight. Measured on d12/768: carrying them costs 1.43x the
+#    step time (289 vs 202 ms). Note the consequence — control's ids are NOT the same
+#    integers here as on the text line, because offsets are assembled, not assigned.
+#    Token TYPE ids are the same everywhere (spec.py), which is what the browser
+#    colours by.
+bands: [control, video, action]
+
+model:
+  depth: 12
+  dim: 768
+  n_head: 12
+  n_kv_head: ${model.n_head}
+
+# sequence_len is DERIVED from spec.video_shape(): 4 delimiters + 5 latent frames of
+# 256 codes + 16 action ids = 1300. Written here as null so the config cannot
+# disagree with the shape contract.
+sequence_len: null
+
+clip:
+  frames: 17
+  res: 128
+
+# Which cache. The classroom subset — 289,915 rows cut from the main-line corpus by
+# data/build_video_cache.py, sized so that ONE HOUR of training is ONE PASS. Build it
+# with `python -m projects.nano_multimodal.data.build_video_cache`.
+#
+# The exemplar's 4,733-row smoke corpus is still a valid override, and it is the right
+# one for checking the wiring in ten minutes:
+#   video_cache=${repo:exemplars/nano_world_model/outputs/cache/dv128_17f}
+video_cache: ${repo:projects/nano_multimodal/private/cache/dv128_17f}
+
+# 32 rows x 1300 = 41,600 tokens per step. THIS is where the number came from: the
+# research line measured a knee at >=32k SUPERVISED tokens per update, and below it the
+# same token budget spends itself in updates that are individually too noisy (raising
+# the batch 8x at equal tokens bought ~0.15 nat for free). It was the right number
+# here and the wrong one everywhere else, which is why it no longer lives in base.yaml.
+device_batch_size: 16
+total_batch_rows: 32
+
+max_steps: 9059        # ONE PASS over the 289,915-row subset at 32 rows/step, and
+                       # about an hour. Sized so the subset is seen ONCE: a student's
+                       # first video model should be short of DATA, not short of
+                       # epochs — repeating a small corpus makes a model look better
+                       # than it is and teaches the wrong lesson about why it is bad.
+
+optimizer:
+  # ONE learning rate for every group. core's train_base defaults are role-based
+  # (embedding_lr 0.2, unembedding_lr 0.004) and were tuned on TEXT; on a video model
+  # they measured 0.34 nat worse at 10k steps — plausibly because 64,000 video codes
+  # each appear rarely, so a 0.2 embedding LR is far too hot. Setting all three equal
+  # reduces core's build_optimizers to plain AdamW.
+  lr_max: 3.0e-4
+  embedding_lr: 3.0e-4
+  unembedding_lr: 3.0e-4
+  weight_decay: 0.1
+  scheduler:
+    warmup_steps: 300
+
+data:
+  sequence_len: ${sequence_len}
+  recipes:
+    # 3. HOW THE ROW IS LAID OUT. One field: the source interleaves codes and action
+    #    ids into one flat sequence, exactly as text hands over one flat run of BPE
+    #    ids. The interleaving is a property of the DATA, not of the model.
+    #    [bos, video_start, L0, a a a a, L1, a a a a, ..., L4, video_end, eos]
+    world_model:
+      template: [bos, video_start, video_tokens, video_end, eos]
+      # 4. WHICH POSITIONS CARRY LOSS. Written per token by the source, not by name
+      #    here, because the supervised and unsupervised positions interleave INSIDE
+      #    the field: action tokens are the control input (learning which button a
+      #    player presses is a different problem) and L0's codes are the given
+      #    observation. See sources.VideoRowSource.
+      supervise: all
+  sources:
+    # 2. WHERE THE DATA COMES FROM. A fixed-stride memmap of pre-encoded clips.
+    - type: video
+      cache: ${video_cache}
+      split: train
+      recipe: world_model
+      weight: 1.0
+  val_sources:
+    - type: video
+      cache: ${video_cache}
+      split: val
+      recipe: world_model
+      weight: 1.0
+
+metric: val/video_ce

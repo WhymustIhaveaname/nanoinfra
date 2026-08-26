@@ -1,0 +1,74 @@
+# text.yaml — line 1 of 3.
+#
+# Diff this against motion.yaml and video.yaml. Four things differ; everything
+# else — model class, loss, loop, batch machinery — is identical, and that is the
+# whole point of the project.
+
+defaults:
+  - base
+  - _self_
+
+line: text
+
+# 1. WHICH BANDS. [text, control] -> vocab 32,768.
+#    Declared in spec.LINES, named here only so the config self-describes.
+#    The video line's video band does not exist for this model: it would be 64,000
+#    columns of un-embedding that can never be emitted, and carrying one dead band
+#    that size measures 1.43x the step time.
+bands: [text, control]
+
+model:
+  depth: 12
+  dim: ${eval:'${model.depth} * 64'}
+  n_head: ${eval:'max(1, (${model.dim} + 127) // 128)'}
+  n_kv_head: ${model.n_head}
+
+sequence_len: 512
+max_steps: -1          # Chinchilla auto-size from the parameter count
+
+# THE SAME BATCH exemplars/text_pretrain trains its champion at: 256 rows x 512 = the
+# 131,072 tokens per step that modalities/text/configs/train_text.yaml declares
+# (grad_accum 16 on one GPU). Matching it is not tidiness — lr_max below was chosen
+# by a bracket run AT this batch size (see that project's provenance.md), so keeping
+# the LR while shrinking the batch takes a tuned pair apart. `max_steps: -1` also
+# divides the Chinchilla token budget by this number, so a smaller batch buys eight
+# times the optimizer steps at eight times the per-step noise for the same tokens.
+device_batch_size: 16
+total_batch_rows: 256
+
+optimizer:
+  lr_max: 3.0e-4       # the production-horizon bracket's winner; see
+                       # exemplars/text_pretrain/provenance.md before re-tuning
+
+# 2. WHERE THE DATA COMES FROM.
+data:
+  sequence_len: ${sequence_len}
+  datasets:
+    fineweb:
+      kind: parquet_text
+      splits:
+        val:   {files: [shard_005_00000.parquet]}   # PINNED. A split inferred from a
+        train: {rest: true}                         # directory listing is a ruler that
+                                                    # moves when you download a shard.
+  # 3. HOW THE ROW IS LAID OUT.
+  recipes:
+    text_pretrain:
+      template: [bos, text_start, text_tokens, text_end, eos]
+      # 4. WHICH POSITIONS CARRY LOSS. Everything: there is no conditioning half.
+      supervise: all
+  sources:
+    - type: text
+      dataset: fineweb
+      split: train
+      recipe: text_pretrain
+      weight: 1.0
+      buffer_batch_size: 32
+  val_sources:
+    - type: text
+      dataset: fineweb
+      split: val
+      recipe: text_pretrain      # THE SAME recipe as training. When these two drifted
+      weight: 1.0                # apart, nothing in the log said so for months.
+      buffer_batch_size: 32
+
+metric: val/text_ce
