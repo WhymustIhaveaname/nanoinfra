@@ -1,6 +1,6 @@
 """
-serve/browse.py — the data browser's backend. PLAN.md "数据浏览器" is the screen
-design; this file is its contract.
+serve/browse.py — the data browser's backend: the panel that shows a student what
+the trainer is actually being fed.
 
 THE ONE RULE. Every batch this panel shows comes from assembly.build_loader(...) —
 the SAME call train.py makes. It never opens a cache file itself. That is not
@@ -238,7 +238,7 @@ def stats(line, split="val"):
 
     On the motion line this is where the overfitting lesson gets its premise: one
     epoch of Bones-SEED is 450,594 rows = 30.4M supervised motion tokens, against a
-    Chinchilla appetite of ~800M for the 40M-parameter model that reads them."""
+    Chinchilla appetite of ~720M for the 36.2M-parameter model that reads them."""
     st = state(line, split)
     v, b = st["vocab"], st["batch"]
     idx = b["idx"].cpu().numpy().ravel()

@@ -169,9 +169,26 @@ class T2MDataSource(DataSource):
         # every caption up front — 37 s for the 450k-pair Bones cache — which is right
         # for training and wrong for a browser or a test that needs a handful of real
         # rows. Absent, nothing changes.
+        #
+        # WHICH clips, and why there are two answers. By default it is the first N —
+        # cheapest, and for a browser showing "some real rows" any N will do. But the
+        # cache is NOT shuffled, so a prefix is a biased sample: the first eighth of
+        # the Bones cache averages 60.5 codes per clip against 54.6 for a random
+        # eighth. That bias is harmless for a preview and fatal for a DATA-SCALING
+        # study, where the whole claim is that the arms differ only in how much data
+        # they hold. So `limit_seed` switches to a deterministic random subsample.
+        # The picks are re-sorted into on-disk order afterwards: which clips are drawn
+        # is the experiment, the order they are read in is not.
         limit = config.get("limit")
         if limit:
-            codes_list, caps_list = codes_list[:int(limit)], caps_list[:int(limit)]
+            n = int(limit)
+            if config.get("limit_seed") is None:
+                sel = range(min(n, len(codes_list)))
+            else:
+                rng = np.random.default_rng(int(config["limit_seed"]))
+                sel = sorted(rng.permutation(len(codes_list))[:n].tolist())
+            codes_list = [codes_list[i] for i in sel]
+            caps_list = [caps_list[i] for i in sel]
 
         toks, lw, attn = [], [], []
         n_pairs = 0

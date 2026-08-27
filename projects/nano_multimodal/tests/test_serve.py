@@ -18,6 +18,7 @@ never talks to one a human is using.
 """
 
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -48,27 +49,54 @@ def get(port, path, timeout=300, **q):
     return d
 
 
+def device_defaults():
+    """The device the server picks must always carry an INDEX, and pinning it must
+    work. Checked in-process and in milliseconds, because the failure it guards is a
+    silent thread death whose only symptom is that every request hangs."""
+    from projects.nano_multimodal.serve.app import _pin, pick_device
+    d = pick_device()
+    assert d == "cpu" or ":" in d, (
+        f"pick_device() returned {d!r} with no device index — torch.cuda.set_device "
+        f"rejects that, and the worker thread that calls it serves every request")
+    _pin(d)
+    import torch
+    if torch.cuda.is_available():
+        _pin("cuda")      # the un-indexed form must be normalised, not raise
+    print(f"  device     pick_device() -> {d}; bare 'cuda' normalises")
+
+
 def main():
+    device_defaults()
     port = free_port()
     # NO --device: the server picks its own, and the DEFAULT is what students run.
     # Passing "--device cuda" here once hid a bug for a whole session — on a two-card
     # box the default is cuda:1, the model landed on card 0 anyway, and every
     # generation died on a device mismatch while every test passed.
-    # The child's output goes to a FILE, never to a pipe. A pipe nobody reads fills
-    # after ~64KB and the child then BLOCKS on write, which would hang the test on a
-    # request that never returns.
+    # ONE VISIBLE GPU, on purpose, and it is the whole reason this test exists in
+    # this shape. That is what a student with one card has, and it is the
+    # configuration that was broken: pick_device() returned a bare "cuda",
+    # torch.cuda.set_device rejects that, the worker thread raised before its loop,
+    # and no request was ever answered — every call hung until the client timed out.
+    # The two-card default kept passing throughout, because there pick_device()
+    # returns an indexed cuda:1. Running the server the way the SMALLER machine runs
+    # it is what makes that class of bug fail here instead of at a student's desk.
     #
-    # HONESTY NOTE. That is a real failure mode and this is the right way to avoid
-    # it, but it is NOT the diagnosis of the ten-minute hangs this test once had:
-    # measured afterwards, the server writes ~2.3KB per run, nowhere near 64KB. The
-    # hangs happened while a second server was live on the same GPUs and were never
-    # reproduced once it was stopped. The cause is unproven; do not repeat the 64KB
-    # story as if it were established.
-    log = open(spec.PRIVATE / "serve-test.log", "w")
+    # It cost two ten-minute timeouts and two wrong diagnoses before it was found:
+    # first "the GPU is busy" (a re-run, without reading the traceback), then "an
+    # unread pipe filled its 64KB buffer and blocked the child" — which is a real
+    # failure mode, and was not this one: the server writes ~2.3KB per run. Writing
+    # the child's output to a FILE is still right, and is kept; it just was never the
+    # cause. The traceback said "the client is waiting" from the first run, and the
+    # answer was in the SERVER's log, which nobody opened.
+    env = {**os.environ, "CUDA_VISIBLE_DEVICES": "0"}
+    # outputs/ holds everything this project WRITES and does not exist in a fresh
+    # clone. Create it rather than crash on the first run someone makes.
+    spec.OUTPUTS.mkdir(parents=True, exist_ok=True)
+    log = open(spec.OUTPUTS / "serve-test.log", "w")
     proc = subprocess.Popen(
         [sys.executable, "-u", "-m", "projects.nano_multimodal.serve.app",
          "--port", str(port), "--batch", "4"],
-        cwd=spec.REPO, stdout=log, stderr=subprocess.STDOUT)
+        cwd=spec.REPO, env=env, stdout=log, stderr=subprocess.STDOUT)
     try:
         for _ in range(120):
             try:

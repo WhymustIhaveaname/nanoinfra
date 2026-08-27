@@ -20,7 +20,7 @@ kernel change while catching nothing real. The two checks below survive that:
 
 RUN IT ON AN IDLE GPU when the timings matter. Sharing a card with a training job
 does not change any of the agreement checks, but it roughly halves every ms/token
-here — the numbers quoted in PLAN.md were measured with nothing else running.
+here, and the project's published ms/token were measured on an idle card.
 """
 
 import argparse

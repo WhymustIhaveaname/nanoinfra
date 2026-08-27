@@ -18,7 +18,8 @@ THE ONE IDEA THIS FILE ENCODES. There is ONE band table. Each of the three lines
 ACTIVATES a subset of it (LINES below). A line pays only for the bands it
 activates — the model's vocab_size is the sum of its active bands, not of all of
 them. Measured on this box (RTX 5090, d12/768): carrying one dead 32750-wide text
-band costs 1.43x the step time. See PLAN.md "为什么按线装配".
+band costs 1.43x the step time — 2.2-2.7x on a naive head, where the un-embedding
+has to materialise a [B, T, V] logit tensor. The cost is bandwidth, not FLOPs.
 """
 
 from pathlib import Path
@@ -29,20 +30,22 @@ REPO = PROJECT.parents[1]
 
 TOKENIZER_DIR = REPO / "outputs" / "tokenizer"        # the BPE artifact (sizes the text band)
 
-# EVERYTHING THIS PROJECT WRITES GOES UNDER private/. That is the whole rule, and it
-# is enforced by paths rather than by remembering: checkpoints, the video cache, the
-# scaling curves and the eyeball galleries all resolve from here, so nothing can land
-# in the project root by accident. What remains in the root is what the project
-# SHIPS — code, configs, and the README a student reads.
+# EVERYTHING THIS PROJECT WRITES GOES UNDER outputs/, and the name is not a
+# preference. `projects/*/outputs/` is what this repo's .gitignore already covers —
+# the public one too — and it is where the sibling exemplar puts the same kind of
+# thing (exemplars/nano_world_model/spec.py: PROJECT / "outputs" / "cache"). A run's
+# checkpoints, the video cache, the scaling curves and the eyeball galleries all
+# resolve from here, so nothing lands in the project root by accident and nothing
+# lands somewhere git is not already told to leave alone.
 #
-# private/ is already gitignored (the repo root ignores `private/` at any depth), so
-# none of it is committed. Two documents there are exceptions worth force-adding —
-# PLAN.md and RESULTS.md — because the reasoning behind the decisions is worth
-# keeping in history even though it is not for publication.
-PRIVATE = PROJECT / "private"
-MODELS_ROOT = PRIVATE / "models"                      # the three checkpoints
-SCALING_DIR = PRIVATE / "scaling"                     # curves + the fitted figure
-GALLERY_DIR = PRIVATE / "gallery"                     # rendered clips, for eyeballing
+# The rule behind the name: a directory that holds gigabytes of generated weights
+# must be one the SHIPPED .gitignore already covers. Inventing a different name for
+# it moves the files somewhere git offers to commit them, and the first person to
+# find out is whoever runs `git add -A` after a training run.
+OUTPUTS = PROJECT / "outputs"
+MODELS_ROOT = OUTPUTS / "models"                      # the three checkpoints
+SCALING_DIR = OUTPUTS / "scaling"                     # curves + the fitted figure
+GALLERY_DIR = OUTPUTS / "gallery"                     # rendered clips, for eyeballing
 
 MOTION_CACHE_DIR = REPO / "outputs" / "motion_caches"  # t2m_*.npz (given, pre-encoded)
 # The motion tokenizer. The shelf holds two, both 512 codes, and the rule that
@@ -68,9 +71,9 @@ MOTION_CACHE_DIR = REPO / "outputs" / "motion_caches"  # t2m_*.npz (given, pre-e
 # difference, while what the eye reacts to is the TIME DERIVATIVE of that error.
 MOTION_CODEC = "rot139_kin_fsq2"
 # The video subset. WRITTEN by data/build_video_cache.py and also SHIPPED to students,
-# so it sits under private/ by the rule above (it is generated, and it must never be
+# so it sits under outputs/ by the rule above (it is generated, and it must never be
 # committed) while being one of the things the release actually packages.
-VIDEO_CACHE_DIR = PRIVATE / "cache"
+VIDEO_CACHE_DIR = OUTPUTS / "cache"
 VIDEO_CODEC_DIR = REPO / "models" / "video" / "cosmos_dv4x8x8"   # decoder only; training never loads it
 
 
@@ -176,7 +179,9 @@ CONTROL_ALIASES = {
 BAND_ORDER = ["text", "control", "motion", "video", "action"]
 
 # Which bands each line activates. This IS the difference between the three
-# models — everything below the data source in PLAN.md's table is identical.
+# models. What is identical: the GPT trunk, the LM head, next-token cross-entropy,
+# MixedDataLoader and core's Trainer — diff the three configs and nothing else
+# moves.
 LINES = {
     "text":   ["text", "control"],
     "motion": ["text", "control", "motion"],
@@ -221,8 +226,8 @@ def video_cache_dir(frames=FRAMES, res=RES):
 # --- 3. RECIPE: model size per line (tune freely) ----------------------------
 # Sizes are a starting point, not a measured optimum. The motion model is
 # deliberately small, and the reason is measured: Bones-SEED holds 128,679 clips x 3
-# captions = 450,594 rows = 30.4M supervised motion tokens per epoch, while a 40M
-# d6 wants ~800M by Chinchilla — about 26 passes over the same clips. What that
+# captions = 450,594 rows = 30.4M supervised motion tokens per epoch, while a 36.2M
+# d6 wants ~720M by Chinchilla — about 24 passes over the same clips. What that
 # buys is visible on this line: d12 reaches its floor at step 5,500 and drifts up
 # for the rest of the run, while d6 is still descending at 16,000 and never gets
 # beaten. The corpus is the ceiling, not the model — that is the lesson of this

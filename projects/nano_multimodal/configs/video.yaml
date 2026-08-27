@@ -43,7 +43,7 @@ clip:
 # The exemplar's 4,733-row smoke corpus is still a valid override, and it is the right
 # one for checking the wiring in ten minutes:
 #   video_cache=${repo:exemplars/nano_world_model/outputs/cache/dv128_17f}
-video_cache: ${repo:projects/nano_multimodal/private/cache/dv128_17f}
+video_cache: ${repo:projects/nano_multimodal/outputs/cache/dv128_17f}
 
 # 32 rows x 1300 = 41,600 tokens per step. THIS is where the number came from: the
 # research line measured a knee at >=32k SUPERVISED tokens per update, and below it the

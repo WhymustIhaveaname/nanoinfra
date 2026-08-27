@@ -98,7 +98,15 @@ def run_curve(depth, max_tokens=MAX_TOKENS, warmup=WARMUP_STEPS):
     N = n_nonembed(depth)
     max_steps = int(max_tokens // TBS)
     steps = eval_schedule(max_steps)
-    ckpt = Path(spec.ckpt_dir("text", depth))
+    # THE LADDER GETS ITS OWN DIRECTORY, and that is not tidiness. The default
+    # save_dir is nmm_<line>_d<depth> — the same name the EXHIBIT run of that depth
+    # uses. A ladder rung at depth 6 would therefore unlink the metrics.jsonl of the
+    # trained d6 text model, and with it every val reading the inference panel ranks
+    # its checkpoints by: nine saved steps would survive as an unlabelled list with
+    # no floor and no best. The runs are different experiments (constant LR, a
+    # different batch, no warmdown) and must not share a namespace.
+    ckpt = OUT / f"d{depth}"
+    ckpt.mkdir(parents=True, exist_ok=True)
     metrics = ckpt / "metrics.jsonl"
     if metrics.exists():
         metrics.unlink()               # a fresh curve, not an append to the last one
@@ -112,6 +120,7 @@ def run_curve(depth, max_tokens=MAX_TOKENS, warmup=WARMUP_STEPS):
         "optimizer.scheduler.warmdown_ratio=0.0",   # constant LR after warmup —
         "optimizer.scheduler.final_lr_frac=1.0",    #   no end-of-run dip
         "checkpoint.enabled=false",
+        f"checkpoint.save_dir={ckpt}",   # see above: never the exhibit run's directory
         "evaluation.eval_at=[" + ",".join(map(str, steps)) + "]",
         f"evaluation.n_batches={EVAL_BATCHES}", f"evaluation.batch={EVAL_BATCH}",
         "logging.log_every=200",

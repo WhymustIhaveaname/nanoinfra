@@ -9,7 +9,7 @@ for one second of eye.
 
     python -m projects.nano_multimodal.tests.decode_gallery
 
-Writes temp/nano_multimodal/decode_gallery.md plus its images.
+Writes outputs/gallery/decode_gallery.md plus its images.
 """
 
 import numpy as np

@@ -15,10 +15,10 @@ bands: [text, control, motion]
 
 model:
   depth: 6             # small ON PURPOSE. Bones-SEED holds 30.4M supervised motion
-  dim: 384             # tokens per epoch; a 40M d6 wants ~800M by Chinchilla, so the
+  dim: 384             # tokens per epoch; a 36M d6 wants ~720M by Chinchilla, so the
   n_head: 3            # corpus is the ceiling here. Measured: d12 floors at step
                        # 5,500 and drifts up, d6 is still descending at 16,000 and
-                       # is never beaten. See PLAN.md.
+                       # is never beaten.
   n_kv_head: ${model.n_head}
 
 sequence_len: 256

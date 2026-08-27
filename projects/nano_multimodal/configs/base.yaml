@@ -61,7 +61,7 @@ checkpoint:
   # Under the PROJECT, not core's default ./outputs/checkpoints/d<depth>_<wandb.name>
   # — three lines at the same depth would otherwise collide in one directory, and
   # the run's metrics.jsonl lands beside its weights.
-  save_dir: "${repo:projects/nano_multimodal/private/models}/nmm_${line}_d${model.depth}"
+  save_dir: "${repo:projects/nano_multimodal/outputs/models}/nmm_${line}_d${model.depth}"
 
 logging:
   log_every: 50

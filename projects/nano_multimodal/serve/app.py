@@ -61,22 +61,58 @@ _JOBS = queue.Queue()
 # the single GPU worker
 # --------------------------------------------------------------------------
 
+_WORKER_ERR = []          # if the worker cannot pin its device, say so on every request
+
+
+def _pin(device):
+    """Pin THIS THREAD to an INDEXED cuda device.
+
+    Two separate traps live in this one call.
+
+    PER-THREAD. torch.cuda.set_device is per-thread, so setting it in main() leaves
+    the worker — the only thread that ever touches the GPU — still on card 0. core's
+    build_system then put the model on card 0 while every input tensor was built on
+    the requested card, and each generate() died with "index is on cuda:1, different
+    from other tensors on cuda:0". The browser was unaffected (it builds no model),
+    so this sat in the DEFAULT configuration while every test that passed had been
+    run with an explicit --device.
+
+    NO INDEX. `torch.cuda.set_device` REJECTS a bare "cuda" — and pick_device()
+    returned exactly that whenever the process can see one GPU, which is a student
+    with one card, or anyone running under CUDA_VISIBLE_DEVICES=0. The worker thread
+    raised before its loop, no request was ever answered, and the symptom was that
+    every call hung until the client's timeout. pick_device() now returns an index;
+    this normalises anyway, because the argument also comes from --device.
+    """
+    import torch
+    d = torch.device(device)
+    if d.type != "cuda":
+        return
+    if d.index is None:
+        d = torch.device("cuda", torch.cuda.current_device())
+    torch.cuda.set_device(d)
+
+
 def _worker(device=None):
-    # PIN THE DEVICE HERE, inside the worker. torch.cuda.set_device is PER-THREAD, so
-    # setting it in main() leaves this thread — the only one that ever touches the GPU
-    # — still defaulting to card 0. core's build_system takes torch.device("cuda") on
-    # a single-GPU launch, so the model landed on card 0 while every input tensor was
-    # built on the requested card, and each generate() died with "index is on cuda:1,
-    # different from other tensors on cuda:0".
-    #
-    # The data browser was unaffected (it builds no model), which is why this sat in
-    # the DEFAULT configuration — pick_device() returns cuda:1 on a two-card box —
-    # while every test that passed had been run with an explicit --device cuda.
-    if device and str(device).startswith("cuda"):
-        import torch
-        torch.cuda.set_device(torch.device(device))
+    # The pinning is INSIDE a try, and the thread does not die if it fails. A dead
+    # worker is the worst possible failure here: _JOBS.put() still succeeds, out.get()
+    # blocks forever, and the caller sees a hang with no error anywhere — which is
+    # exactly how the bug above hid. Record it instead and let gpu() raise it.
+    if device:
+        try:
+            _pin(device)
+        except Exception as e:                               # noqa: BLE001
+            _WORKER_ERR.append(
+                f"the GPU worker could not pin device {device!r}: {type(e).__name__}: {e}")
     while True:
         fn, args, kw, out = _JOBS.get()
+        if _WORKER_ERR:
+            # Also answered HERE, not only in gpu(). A request that arrived while the
+            # worker was still pinning passed gpu()'s check on an empty list and is
+            # already in the queue; running it would put it on whatever device the
+            # failed pin left behind. Answer every queued job with the cause instead.
+            out.put(("err", _WORKER_ERR[0]))
+            continue
         try:
             out.put(("ok", fn(*args, **kw)))
         except Exception as e:                               # noqa: BLE001
@@ -86,6 +122,8 @@ def _worker(device=None):
 def gpu(fn, *args, **kw):
     """Run fn on the GPU worker and wait. Every handler goes through here, so the
     device is touched by exactly one thread no matter how many requests arrive."""
+    if _WORKER_ERR:
+        raise RuntimeError(_WORKER_ERR[0])
     out = queue.Queue()
     _JOBS.put((fn, args, kw, out))
     kind, val = out.get()
@@ -225,7 +263,9 @@ def pick_device():
     try:
         import torch
         n = torch.cuda.device_count()
-        return "cuda:1" if n > 1 else ("cuda" if n else "cpu")
+        # ALWAYS an index. A bare "cuda" is rejected by torch.cuda.set_device, and
+        # the worker that calls it is the only thread serving requests.
+        return "cuda:1" if n > 1 else ("cuda:0" if n else "cpu")
     except Exception:                                        # noqa: BLE001
         return "cpu"
 
