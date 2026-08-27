@@ -58,6 +58,12 @@ def list_checkpoints(line):
         val = inference._val_by_step(run / "metrics.jsonl")
         steps = sorted(paths, key=inference._step_of)
         floor = min(steps, key=lambda p: val.get(inference._step_of(p), float("inf")))
+        # THESE THREE TAG STRINGS ARE AN API. web/index.html matches "末尾" literally
+        # to decide whether to show the overfitting warning beside the picker. Nothing
+        # binds the two files together, so re-wording a tag here — a translation, a
+        # tidier phrase, a stray space — removes that warning silently: no error, no
+        # console message, just a panel that stops teaching the lesson it exists for.
+        # Change one end and grep the other.
         for p in steps:
             v = val.get(inference._step_of(p))
             tags = []

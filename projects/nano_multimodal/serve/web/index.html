@@ -425,6 +425,8 @@ async function loadCheckpoints() {
     CKPT = d.checkpoints[0].path;
     const mark = () => {
       const c = d.checkpoints.find(x => x.path === sel.value);
+      // Literal match on a tag written by play.list_checkpoints(). Renaming it there
+      // without changing it here removes this warning with no error of any kind.
       $('#ckpt-note').innerHTML = c && c.tags.includes('末尾')
         ? '<b style="color:#ff9f43">这是过拟合的那一端 —— 同样的数据、同样的配方,只是训久了</b>'
         : '';

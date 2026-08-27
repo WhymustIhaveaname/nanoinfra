@@ -74,24 +74,74 @@ d12(136.1M,是 d6 的 3.8 倍)在第 5,500 步就到 val 2.3811,然后一路漂�
 
 `train.py` 里没有一处 `if line == ...`。把三份 config diff 一下就看得见为什么。
 
-## 数据从哪来
+## 数据从哪来 —— 你自己下载、自己处理
 
-三条线的 tokenizer 和编码好的数据都是**给定的**——这正是让三条线在训练侧完全相同的
-前提。但"给定"要说清是谁给:
+**这个仓库不发数据。**
 
-| 线 | 要什么 | 怎么拿到 |
+下面标 ✔ 的命令在 RTX 5090 上真跑过(冒烟规模);标 · 的只核对过入口和参数,没有实跑
+——它们是下载动作,或者依赖下载的产物。时间标注同理:实测的写"实测",外推的写"外推"。
+
+### 文本 —— 全自助,不需要任何账号
+
+```bash
+·  python -m exemplars.text_pretrain.data.download_shards  # FineWeb sample-10BT → outputs/base_data/
+✔  python -m modalities.text.train_tokenizer               # 训你自己的 BPE(vocab 必须仍是 32768)
+✔  python -m projects.nano_multimodal.train --config-name text
+```
+
+`train_tokenizer` 不带 `--out` 会**写进默认位置 `outputs/tokenizer/`,原地覆盖**。
+想试跑就加 `--out <别处>`;`get_tokenizer` 读的是 `NANOINFRA_TOKENIZER_DIR`,指过去即可。
+
+不带参数会下**六个 shard(约 13 GB)**,因为 val 是**按文件名钉死的**(`text.yaml` 指定
+`shard_005`),train 是"其余全部"——少下一个,训练语料的定义就变了。
+d6 教学跑 3,000 步只吃 0.39B token,一个 shard 够用;复现 d12 冠军点(2.705B)要四个。
+
+### 视频 —— 全自助,不需要任何账号
+
+```bash
+python -m exemplars.nano_world_model.data.download --shards 2   # 公开 VizDoom + Cosmos codec
+python -m exemplars.nano_world_model.data.encode                #   像素 → 码
+python -m exemplars.nano_world_model.build_cache                #   码 → 定步长 memmap
+python -m projects.nano_multimodal.train --config-name video \
+    video_cache=exemplars/nano_world_model/outputs/cache/dv128_17f
+```
+
+视频 codec(Cosmos DV4×8×8)是**冻结的公开权重,不用训**——`download.py` 会一起取。
+最后一行是本项目的训练器**直接吃样板产出的 cache**:两边的形状契约逐项相同
+(17 帧 / 128px / 每帧 256 码 / 5 个 latent 帧 / td=4),只是行数不同。
+**已实测**:拿样板那份 4,733 行的 cache 训我们的视频线,起始 loss 恰好
+`ln(64037) = 11.067`,30 步降到 10.46,MFU 47%。
+
+### 动作 —— 骨架免费,**标注在牌照墙后**
+
+```bash
+·  python -m exemplars.nano_motion.data.download           # LAFAN1(Ubisoft 动捕,免账号)
+✔  python -m exemplars.nano_motion.data.download --check   #   随时看盘上有什么
+✔  python -m exemplars.nano_motion.data.prepare            #   → rot139 特征(幂等,已存在就跳过)
+✔  python -m exemplars.nano_motion.train_codec             #   30,000 步 ≈ 16 分钟(外推)
+✔  python -m exemplars.nano_motion.data.encode --codec <上一步的 .pt>
+```
+
+**这条链路给你的是 tokenizer 和一个无条件动作模型,不是文本→动作。** LAFAN1 没有 caption。
+
+要训本项目的**文本→动作**线,得手工下载两份许可数据:
+[AMASS](https://amass.is.tue.mpg.de)(逐个子集注册、接受许可)和
+[HumanML3D](https://github.com/EricGuo5513/HumanML3D)(caption)。脚本抓不了,这是设计如此。
+下好之后 `prepare.py --source amass`,后面照旧,产出的 `t2m_*.npz` 就是 `motion.yaml` 要的。
+
+**⚠ `encode.py` 写进共享的 `outputs/motion_caches/`,文件名由数据源推导,`--limit` 不改名字。**
+所以一次 `--limit` 冒烟会**原地顶掉**同名的真 artifact(我们踩过)。好在它写的 sidecar
+如实记着是哪个 codec 编的,`assembly.py` 会读它并与 `spec.MOTION_CODEC` 对账。
+
+### 三条线在"tokenizer 从哪来"上恰好是三种答案
+
+| 线 | tokenizer | 代价 |
 |---|---|---|
-| 文本 | FineWeb parquet | 公开。放进 `outputs/base_data/`。d6 教学跑 3,000 步只吃 0.39B token,**一个 shard 就够**;复现 d12 冠军点(2.705B)要 4 个 |
-| 动作 | 预编码的 `outputs/motion_caches/t2m_bones_*.npz` + `models/motion/codec_rot139_kin_fsq2_*.pt` | **上课发的数据包里有**。要自己造:走 `exemplars/nano_motion` 的 `data/encode.py`(它记着自己那条语料的取法) |
-| 视频 | `outputs/cache/dv128_17f/` 的 memmap + 解码用的 Cosmos `decoder.jit` | **数据包里有**。要自己造:`exemplars/nano_world_model/data/download.py` 抓公开的 VizDoom 数据集和 codec,再 `encode.py` → `build_cache.py`,得到的 cache 直接用 `video_cache=` 覆盖(见 `configs/video.yaml`) |
+| 文本 | **自己训一个** BPE | 秒级 |
+| 动作 | 自己训一个 codec,配方在 `modalities/motion/tokenizers/rot139_kin_fsq2/recipe.yaml` | 1,000 步实测 33 秒 → 30,000 步外推 16 分钟 |
+| 视频 | **下一个别人训好的**(Cosmos,冻结) | 下载 |
 
-本目录的 `data/build_video_cache.py` 从 `datasets/pipe4` 切子集——那是**内部的主线语料**,
-公开读者没有。它留在这里是为了说明子集是怎么切的(以及为什么切成"一小时正好一遍"),
-不是给外部复现用的入口;外部入口是上表视频那一行的 exemplar 链路。
-
-渲染火柴人还要 `models/smplh/neutral/model.npz`,但只用到里面的静止骨架和父节点表
-(**1.9 KB**,数据包里带的就是这个裁剪版)。完整 SMPL+H 要去
-[mano.is.tue.mpg.de](https://mano.is.tue.mpg.de) 自己取,本项目三条线都不需要它。
+第三种要注意:你**继承了它的天花板**。视频线的重建上界是量得出来的,模型再好也过不去。
 
 ## 跑
 
