@@ -1,0 +1,25 @@
+upstream/ 下的这几个 .py 原样取自 Masao-Taketani 的 GameNGen 复现项目：
+
+    https://github.com/Masao-Taketani/GameNGen
+    commit 692b5b328c84a8fe85bd6288144fc4e0182884e7 (2026-01-26)
+    Apache License 2.0（见同目录 LICENSE）
+
+只取了推理路径需要的模块，一个字节没改：
+
+    model.py            载入 unet / vae / action_embedding / noise_scheduler
+    run_inference.py    next_latent（单帧去噪）、latent 编解码辅助
+    config_sd.py        BUFFER_SIZE=64、CFG=1.5、240x320+16 padding 等常量
+    dataset.py          preprocess_train（从像素起步时才用到）
+    data_augmentation.py  conditioning 增强
+    utils.py            NUM_BUCKETS
+
+训练相关的脚本（train_*.py、finetune_*.py、encode_images.py、ViZDoomPPO/）
+一律没有搬——本项目只做推理，不复现训练。
+
+那个项目本身是 Google 论文 GameNGen (arXiv:2408.14837) 的非官方复现，
+作者明确说过质量低于原论文。Google 未公开官方权重。
+
+权重（也非官方，同一作者）从 HuggingFace 下载，不入库：
+    Masao-Taketani/vizdoom-diffusion-dynamic-model
+    Masao-Taketani/vizdoom-finetuned-decoder
+    Masao-Taketani/vizdoom-inference-latent-dataset（只取其中一个 episode 做开局上下文）

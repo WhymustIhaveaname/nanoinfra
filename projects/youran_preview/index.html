@@ -2,11 +2,12 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>nano_world_model 数据预览</title>
+<title>nano_world_model 数据预览 + GameNGen 试玩</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #171a21; --line: #262b36;
     --fg: #e6e9ef; --dim: #9aa3b2; --accent: #7aa2f7; --warn: #e0af68;
+    --ok: #9ece6a;
   }
   * { box-sizing: border-box; }
   body {
@@ -18,28 +19,23 @@
   .sub { color: var(--dim); font-size: 13px; max-width: 940px; }
   .sub code { background: #1e222b; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 
-  #tabs {
-    display: flex; gap: 8px; flex-wrap: wrap;
-    padding: 0 28px 14px; border-bottom: 1px solid var(--line);
-  }
-  #tabs button {
-    background: var(--panel); color: var(--dim); border: 1px solid var(--line);
-    padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 13px;
-  }
+  #tabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 28px 14px;
+          border-bottom: 1px solid var(--line); }
+  #tabs button { background: var(--panel); color: var(--dim); border: 1px solid var(--line);
+                 padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 13px; }
   #tabs button:hover { color: var(--fg); border-color: var(--accent); }
-  #tabs button.on { background: var(--accent); color: #0f1115; border-color: var(--accent); font-weight: 600; }
+  #tabs button.on { background: var(--accent); color: #0f1115;
+                    border-color: var(--accent); font-weight: 600; }
   #tabs .sep { width: 1px; background: var(--line); margin: 4px 6px; }
 
-  #controls {
-    position: sticky; top: 0; z-index: 10;
-    display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
-    padding: 12px 28px; background: rgba(15,17,21,.96);
-    border-bottom: 1px solid var(--line); backdrop-filter: blur(6px);
-  }
-  #controls button {
+  #controls { position: sticky; top: 0; z-index: 10; display: flex; align-items: center;
+              gap: 18px; flex-wrap: wrap; padding: 12px 28px;
+              background: rgba(15,17,21,.96); border-bottom: 1px solid var(--line);
+              backdrop-filter: blur(6px); }
+  #controls button, .btn {
     background: var(--panel); color: var(--fg); border: 1px solid var(--line);
-    padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
-  }
+    padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  #controls button:hover, .btn:hover { border-color: var(--accent); }
   label { color: var(--dim); font-size: 13px; display: flex; align-items: center; gap: 8px; }
   input[type=range] { width: 150px; accent-color: var(--accent); }
   .val { color: var(--fg); font-variant-numeric: tabular-nums; min-width: 46px; }
@@ -48,41 +44,61 @@
   h2 { margin: 0 0 4px; font-size: 17px; font-weight: 600; }
   h2 .tag { color: var(--dim); font-weight: 400; font-size: 12px; margin-left: 8px;
             font-family: ui-monospace, Menlo, monospace; }
-  .note { color: var(--dim); margin: 0 0 20px; font-size: 13px; max-width: 900px; }
   h3 { margin: 26px 0 4px; font-size: 14px; font-weight: 600; color: var(--fg); }
+  .note { color: var(--dim); margin: 0 0 20px; font-size: 13px; max-width: 900px; }
   .vidbox { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
 
   .clip { display: flex; gap: 22px; align-items: flex-start; margin-bottom: 24px; flex-wrap: wrap; }
   .panel { display: flex; flex-direction: column; gap: 6px; }
   .cap { color: var(--dim); font-size: 12px; }
-  .film {
-    width: 256px; height: 256px; image-rendering: pixelated;
-    border: 1px solid var(--line); border-radius: 4px;
-    background-repeat: no-repeat; background-size: auto 256px;
-  }
+  .film { width: 256px; height: 256px; image-rendering: pixelated;
+          border: 1px solid var(--line); border-radius: 4px;
+          background-repeat: no-repeat; background-size: auto 256px; }
   .meta { font-size: 12px; color: var(--dim); min-width: 280px; }
   .meta b { color: var(--fg); font-weight: 600; }
   .meta .row { margin-bottom: 3px; }
-  .acts { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+  .acts { font-family: ui-monospace, Menlo, monospace; font-size: 11px;
           color: var(--dim); line-height: 1.9; margin-top: 8px; }
   .acts span { background: #1e222b; padding: 1px 4px; border-radius: 3px; margin-right: 3px; }
   .acts span.now { background: var(--accent); color: #0f1115; }
   .hint { color: var(--warn); font-size: 12px; margin-top: 8px; }
+
+  /* --- 试玩 --- */
+  #screen { width: 640px; height: 512px; image-rendering: pixelated; display: block;
+            border: 1px solid var(--line); border-radius: 4px; background: #000; cursor: pointer; }
+  #screen.locked { cursor: none; border-color: var(--accent); }
+  .gamewrap { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  /* 两栏都要钉死宽度：不钉的话栏内那两段说明文字会把栏撑到 900px 上下，
+     两栏加起来超过容器就换行，右栏掉到画面底下去。 */
+  .gamecol { flex: 0 0 640px; width: 640px; }
+  .gamecol .note { max-width: 640px; }
+  .stats { font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+           color: var(--dim); flex: 0 1 420px; max-width: 420px; }
+  .stats .note { max-width: 420px; }
+  .stats b { color: var(--fg); }
+  .stats .big { font-size: 26px; color: var(--ok); font-weight: 600; }
+  .keys { display: grid; grid-template-columns: 84px 1fr; gap: 3px 12px;
+          font-size: 12px; color: var(--dim); margin-top: 12px; }
+  .keys kbd { background: #1e222b; border: 1px solid var(--line); border-bottom-width: 2px;
+              border-radius: 4px; padding: 1px 6px; font-family: ui-monospace, Menlo, monospace; }
+  /* top/left 必须写：absolute 元素不给偏移就落在静态位置，也就是掉到 canvas 下面 */
+  #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 512px; display: flex;
+             align-items: center; justify-content: center; text-align: center;
+             background: rgba(15,17,21,.82); color: var(--fg); font-size: 15px;
+             border-radius: 4px; pointer-events: none; }
+  .rel { position: relative; width: 640px; }
+  .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+          color: var(--dim); }
+  .bad { color: #f7768e; }
 </style>
 </head>
 <body>
 <header>
-  <h1>nano_world_model — 数据预览</h1>
+  <h1>nano_world_model — 数据预览 &amp; GameNGen 在线试玩</h1>
   <div class="sub">
-    每段都是一个 <b>17 帧 / 128px</b> 的训练 clip（游戏 35fps，17 帧 ≈ 0.49 秒）。
-    左边是<b>原始</b>画面，右边是过一遍冻结的 Cosmos DV4×8×8 编解码器之后的<b>重建</b>。
-    模型看到的不是像素，而是编码后的 <code>1280</code> 个整数 ——
-    右栏就是那 1280 个整数能还原出多少东西。
-    <br><br>
-    上面四个标签是这个 exemplar 全部的数据来源：<code>PPO</code> 是下载的公开语料，
-    其余三个是本地录制的三个 layer。<b>后三个在发布出来的代码里跑的是同一个策略、
-    同一个 8-bot 世界</b>，差别只有每集多长（4000 / 21000 / 4000 帧）——
-    切过来切过去看着差不多，本来就该差不多。
+    左边第一个标签是<b>玩神经网络生成的 Doom</b>：没有游戏引擎，每一帧都是扩散模型
+    根据过去 64 帧和你按的键画出来的。后面四个标签是 nano_world_model 的<b>训练数据预览</b>，
+    每段 17 帧 / 128px 的训练切片并排显示原始与编解码重建。
   </div>
 </header>
 
@@ -95,7 +111,72 @@
   <span class="sub" style="margin-left:auto">拖「帧」可逐帧对比</span>
 </div>
 
-<main id="main"></main>
+<main id="main">
+  <section id="game" style="display:none">
+    <h2>在线试玩：GameNGen 复现模型<span class="tag" id="g-gpu">…</span></h2>
+    <p class="note">
+      这不是 Doom 在跑，是一个扩散模型在<b>假装自己是游戏引擎</b>。它只看得见过去 64 帧
+      画面和 64 个动作，然后画出下一帧——地图、碰撞、血量弹药，全都不存在，是模型
+      凭记忆猜出来的。走远了场景会漂移、走回头路房间可能变样，那是它的固有行为，不是坏了。
+      <br><br>
+      权重来自 <a href="https://github.com/Masao-Taketani/GameNGen" style="color:var(--accent)">Masao-Taketani 的非官方复现</a>，
+      作者自述质量低于原论文。Google 没有公开官方权重。
+    </p>
+
+    <div class="gamewrap">
+      <div class="gamecol">
+        <div class="rel">
+          <canvas id="screen" width="320" height="256"></canvas>
+          <div id="overlay">点击画面开始 · 鼠标左右转向 · Esc 退出</div>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn" id="g-new">↻ 新开一局</button>
+          <label>速度
+            <select class="btn" id="g-speed">
+              <option value="1">全速（模型能多快就多快）</option>
+              <option value="0.5">0.5 倍速</option>
+              <option value="0.25">0.25 倍速</option>
+            </select>
+          </label>
+          <span class="mono" id="g-speednote"></span>
+        </div>
+        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+          <label style="white-space:nowrap">推理服务</label>
+          <input id="g-api" class="btn" style="flex:1;min-width:200px;font-family:ui-monospace,Menlo,monospace"
+                 placeholder="http://主机:25677">
+          <button class="btn" id="g-apply">切换</button>
+        </div>
+        <p class="note" style="margin-top:8px;font-size:12px">
+          倍速是相对<b>全速</b>而言：0.5 倍就是每生成一帧之后再多等一帧的时间。
+          原始数据是 35 tic/秒抽 4 帧存一帧，也就是模型的「真实游戏速度」应为
+          <b>8.75 fps</b>；这块卡上全速只有 3.3 fps，所以全速本身已经约等于
+          0.38 倍真实速度。慢下来反而更好控——每帧都是完整算出来的，不掉帧。
+        </p>
+      </div>
+
+      <div class="stats">
+        <div class="big" id="g-fps">— fps</div>
+        <div class="row">每帧 <b id="g-ms">—</b> ms &nbsp;·&nbsp; 已生成 <b id="g-steps">0</b> 帧</div>
+        <div class="row">当前动作 <b id="g-act">—</b></div>
+        <div class="row" id="g-bench" style="margin-top:8px"></div>
+        <div class="row bad" id="g-err"></div>
+
+        <div class="keys">
+          <span><kbd>鼠标左右</kbd></span><span>转向（无抬头低头，这个模型没有）</span>
+          <span><kbd>W</kbd></span><span>前进</span>
+          <span><kbd>S</kbd></span><span>后退</span>
+          <span><kbd>A</kbd> <kbd>D</kbd></span><span>左右平移</span>
+          <span><kbd>鼠标左键</kbd></span><span>开火</span>
+          <span><kbd>Esc</kbd></span><span>松开鼠标</span>
+        </div>
+        <p class="note" style="margin-top:14px;font-size:12px">
+          模型的动作表共 12 个，转向和前进/后退可以组合（<code>TL+FWD</code> 等），
+          但<b>开火不能和移动同帧</b>——和 nanoinfra 那套 19 动作表是同一个限制。
+        </p>
+      </div>
+    </div>
+  </section>
+</main>
 
 <script>
 const RES = 128, SCALE = 2;
@@ -113,6 +194,152 @@ function panel(cap, src) {
   return [d, f];
 }
 
+/* ==================== 试玩 ==================== */
+// 推理服务地址可切换：默认同主机 :25677（本机 4060 Ti），也可以指到别的机器
+// （比如 1202b 的 A6000）。存在 localStorage，刷新后还在。
+let GAME_API = localStorage.getItem('gamengen_api')
+            || `http://${location.hostname}:25677`;
+const G = {
+  sid: null, running: false, speed: 1, steps: 0,
+  keys: new Set(), dx: 0, fire: false, times: [],
+};
+
+function pickAction() {
+  // 鼠标累计位移决定转向，超过阈值才算，免得手一抖就转
+  const TURN_DEADZONE = 6;
+  let turn = 0;
+  if (G.dx >  TURN_DEADZONE) turn =  1;
+  if (G.dx < -TURN_DEADZONE) turn = -1;
+  G.dx = 0;
+  const fwd = G.keys.has('w'), back = G.keys.has('s');
+  const left = G.keys.has('a'), right = G.keys.has('d');
+  // 开火独占，和上游动作表一致
+  if (G.fire) { G.fire = false; return 11; }
+  if (turn < 0 && fwd)  return 9;
+  if (turn > 0 && fwd)  return 10;
+  if (turn < 0 && back) return 4;
+  if (turn > 0 && back) return 5;
+  if (turn < 0) return 1;
+  if (turn > 0) return 2;
+  if (fwd)  return 8;
+  if (back) return 3;
+  if (left)  return 7;
+  if (right) return 6;
+  return 0;
+}
+
+const $ = id => document.getElementById(id);
+
+function drawFrame(dataUrl) {
+  const img = new Image();
+  img.onload = () => $('screen').getContext('2d').drawImage(img, 0, 0);
+  img.src = dataUrl;
+}
+
+async function gameNew() {
+  $('g-err').textContent = '';
+  try {
+    const r = await fetch(GAME_API + '/new', {method: 'POST', body: JSON.stringify({})});
+    const d = await r.json();
+    G.sid = d.id; G.steps = 0; G.times = [];
+    drawFrame(d.frame);
+    $('g-steps').textContent = '0';
+    $('g-fps').textContent = '— fps';
+  } catch (e) {
+    $('g-err').innerHTML = `<span class="bad">连不上推理服务 ${GAME_API}。`
+      + `请确认 gamengen/server.py 在跑。</span>`;
+  }
+}
+
+async function gameLoop() {
+  if (!G.running) return;
+  if (!G.sid) { await gameNew(); if (!G.sid) { G.running = false; return; } }
+  const action = pickAction();
+  const t0 = performance.now();
+  try {
+    const r = await fetch(GAME_API + '/step', {
+      method: 'POST', body: JSON.stringify({id: G.sid, action})});
+    if (r.status === 410) { G.sid = null; return setTimeout(gameLoop, 0); }
+    const d = await r.json();
+    drawFrame(d.frame);
+    G.steps = d.steps;
+    const wall = performance.now() - t0;
+    // 丢掉本局第一帧：它带着 cuDNN 自动调优和 GPU 升频的一次性成本，算进均值会
+    // 让显示的 fps 长时间偏低一大截。服务端也已经预热过一帧，这里是双保险。
+    if (G.steps > 0) { G.times.push(wall); if (G.times.length > 15) G.times.shift(); }
+    const mean = G.times.length ? G.times.reduce((a, b) => a + b, 0) / G.times.length : wall;
+    $('g-ms').textContent = d.ms.toFixed(0);
+    $('g-steps').textContent = d.steps;
+    $('g-act').textContent = d.action;
+    const eff = 1000 / mean * G.speed;
+    $('g-fps').innerHTML = eff.toFixed(2) + ' fps'
+      + `<span style="font-size:13px;color:var(--dim)"> = ${(eff / 8.75).toFixed(2)}× 真实速度</span>`;
+    // 减速：全速之外额外等待，让画面推进速度按比例变慢
+    const extra = (1 / G.speed - 1) * wall;
+    setTimeout(gameLoop, Math.max(0, extra));
+  } catch (e) {
+    $('g-err').innerHTML = '<span class="bad">推理请求失败，已停。</span>';
+    G.running = false;
+  }
+}
+
+function initGame() {
+  const cv = $('screen');
+  cv.onclick = () => cv.requestPointerLock();
+  document.addEventListener('pointerlockchange', () => {
+    const locked = document.pointerLockElement === cv;
+    cv.classList.toggle('locked', locked);
+    $('overlay').style.display = locked ? 'none' : 'flex';
+    G.running = locked;
+    if (locked) gameLoop();
+  });
+  document.addEventListener('mousemove', e => {
+    if (document.pointerLockElement === cv) G.dx += e.movementX;
+  });
+  document.addEventListener('mousedown', e => {
+    if (document.pointerLockElement === cv && e.button === 0) G.fire = true;
+  });
+  addEventListener('keydown', e => {
+    if (document.pointerLockElement === cv) {
+      G.keys.add(e.key.toLowerCase());
+      if (['w','a','s','d',' '].includes(e.key.toLowerCase())) e.preventDefault();
+    }
+  });
+  addEventListener('keyup', e => G.keys.delete(e.key.toLowerCase()));
+  $('g-new').onclick = gameNew;
+  $('g-api').value = GAME_API;
+  $('g-apply').onclick = () => {
+    GAME_API = $('g-api').value.replace(/\/+$/, '');
+    localStorage.setItem('gamengen_api', GAME_API);
+    G.running = false; G.sid = null;
+    probeServer();
+  };
+  $('g-speed').onchange = e => {
+    G.speed = +e.target.value;
+    $('g-speednote').textContent = G.speed === 1 ? '' :
+      `每帧之后额外等 ${(1 / G.speed - 1).toFixed(0)} 帧的时间`;
+  };
+
+  probeServer();
+}
+
+function probeServer() {
+  const $ = id => document.getElementById(id);
+  fetch(GAME_API + '/info').then(r => r.json()).then(d => {
+    $('g-gpu').textContent = `${d.gpu} · ${d.steps} 步去噪 · ${d.res} · 上下文 ${d.buffer} 帧`;
+    if (d.bench) {
+      $('g-bench').innerHTML =
+        `启动基准（${d.bench.n} 帧连续前进）：<b>${d.bench.mean_ms} ms/帧</b> = `
+        + `<b>${d.bench.fps} fps</b>，抖动 ${d.bench.min_ms}–${d.bench.max_ms} ms`;
+    }
+    gameNew();
+  }).catch(() => {
+    $('g-gpu').textContent = '推理服务未启动';
+    $('g-err').innerHTML = `<span class="bad">连不上 ${GAME_API}</span>`;
+  });
+}
+
+/* ==================== 数据预览 ==================== */
 Promise.all([
   fetch('outputs/manifest.json').then(r => r.json()),
   fetch('outputs/videos.json').then(r => r.json()).catch(() => ({})),
@@ -120,26 +347,30 @@ Promise.all([
   const main = document.getElementById('main');
   const tabs = document.getElementById('tabs');
 
+  // 第一个标签：试玩（内容是页面里写死的那段 HTML）
+  const gbtn = document.createElement('button');
+  gbtn.textContent = '🎮 在线试玩';
+  gbtn.onclick = () => show(0);
+  tabs.appendChild(gbtn);
+  const gsep = document.createElement('div'); gsep.className = 'sep'; tabs.appendChild(gsep);
+  sections.push({sec: $('game'), btn: gbtn, films: [], actEls: [], isGame: true});
+
   groups.forEach((g, gi) => {
-    // --- tab 按钮：下载的那组和本地录制之间加一道分隔 ---
     if (gi === 1) {
-      const sep = document.createElement('div');
-      sep.className = 'sep';
-      tabs.appendChild(sep);
+      const sep = document.createElement('div'); sep.className = 'sep'; tabs.appendChild(sep);
     }
     const btn = document.createElement('button');
     btn.textContent = g.title.replace(/^(下载|本地录制)：/, '');
     btn.title = g.id;
-    btn.onclick = () => show(gi);
+    const myIndex = sections.length;
+    btn.onclick = () => show(myIndex);
     tabs.appendChild(btn);
 
-    // --- 该组的内容 ---
     const sec = document.createElement('section');
     sec.style.display = 'none';
     sec.innerHTML = `<h2>${g.title}<span class="tag">${g.id}</span></h2>
                      <p class="note">${g.note}</p>`;
 
-    // --- 完整录像（截 1 分钟）---
     const v = vids[g.id.replace(/^rec_/, '')];
     const vbox = document.createElement('div');
     vbox.className = 'vidbox';
@@ -197,10 +428,10 @@ Promise.all([
       meta.appendChild(acts);
       actEls.push(acts);
       if (c.uniq_codes / c.n_codes < 0.5) {
-        const h = document.createElement('div');
-        h.className = 'hint';
-        h.textContent = '↑ 不重复的码不到一半：画面几乎不动，编码器一直在复用同一批码。';
-        meta.appendChild(h);
+        const hint = document.createElement('div');
+        hint.className = 'hint';
+        hint.textContent = '↑ 不重复的码不到一半：画面几乎不动，编码器一直在复用同一批码。';
+        meta.appendChild(hint);
       }
       row.append(p1, p2, meta);
       sec.appendChild(row);
@@ -213,8 +444,9 @@ Promise.all([
   fslider.max = T - 1;
 
   function draw() {
-    const off = -frame * RES * SCALE;
     const s = sections[active];
+    if (s.isGame) return;
+    const off = -frame * RES * SCALE;
     for (const f of s.films) f.style.backgroundPosition = `${off}px 0`;
     for (const a of s.actEls) {
       const kids = a.children;
@@ -231,7 +463,10 @@ Promise.all([
       s.btn.className = (i === j) ? 'on' : '';
     });
     active = i;
-    draw();
+    // 逐帧播放那排控件对试玩没意义
+    document.getElementById('controls').style.display =
+      sections[i].isGame ? 'none' : 'flex';
+    if (!sections[i].isGame) draw();
     window.scrollTo({ top: 0 });
   }
 
@@ -239,6 +474,7 @@ Promise.all([
     if (playing && ts - last > 1000 / fps) { last = ts; frame = (frame + 1) % T; draw(); }
     requestAnimationFrame(tick);
   }
+  initGame();
   show(0);
   requestAnimationFrame(tick);
 
@@ -255,8 +491,8 @@ Promise.all([
     document.getElementById('play').textContent = '▶ 播放';
     frame = +e.target.value; draw();
   };
-  // 左右方向键逐帧
   document.onkeydown = e => {
+    if (sections[active] && sections[active].isGame) return;
     if (e.key === 'ArrowLeft')  { playing = false; frame = (frame - 1 + T) % T; draw(); }
     if (e.key === 'ArrowRight') { playing = false; frame = (frame + 1) % T; draw(); }
     if (e.key === 'ArrowLeft' || e.key === 'ArrowRight')
