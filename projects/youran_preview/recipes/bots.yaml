@@ -1,0 +1,40 @@
+root: nano_world_model
+layers:
+  bots: 1.0
+episode:
+  bots_frames: 4000
+  bots_long_frames: 21000
+  pans_frames: 4000
+pans:
+  world_bots_frac: 1.0
+coverage:
+  segments:
+    pure_TL: 0.07
+    pure_TR: 0.07
+    pure_ML: 0.05
+    pure_MR: 0.05
+    FWD: 0.16
+    FWD_TL: 0.07
+    FWD_TR: 0.07
+    FWD_ML: 0.05
+    FWD_MR: 0.05
+    circle_L: 0.05
+    circle_R: 0.05
+    ATK: 0.06
+    noop: 0.06
+    sticky_random: 0.14
+  seg_tics:
+  - 8
+  - 40
+monsters:
+  roster:
+  - Zombieman
+  k:
+  - 0
+  - 0
+  walkable_mask: exemplars/nano_world_model/data/record/walkable.npz
+  awake_frac:
+    ent_revisit: 0.0
+    ent_long: 0.0
+val:
+  episode_every: 8

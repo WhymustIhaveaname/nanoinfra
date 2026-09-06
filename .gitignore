@@ -33,3 +33,6 @@ projects/*/outputs/
 
 # --- OS ---
 .DS_Store
+
+# vizdoom 运行时吐在仓库根目录的配置，不是源码
+_vizdoom.ini
