@@ -370,7 +370,7 @@ function showModelNote() {
   const id = document.getElementById('g-model').value;
   const m = MODELS.find(x => x.id === id);
   document.getElementById('g-modelnote').innerHTML = m
-    ? `${m.note}<br><a href="${m.github}" target="_blank" style="color:var(--accent)">代码仓库</a>`
+    ? `${m.note} <a href="${m.github}" target="_blank" style="color:var(--accent)">代码仓库</a>`
       + ` · <a href="${m.repo}" target="_blank" style="color:var(--accent)">权重</a>` : '';
 }
 
