@@ -67,6 +67,14 @@ _MODELS = {}                    # id -> 模型清单里的一条
 _CUR = {"id": None, "engine": None, "bench": None, "load_ms": None}
 _IDS = itertools.count(1)       # session id：必须单调，用 len(_STATE) 会重号
 
+# 载入进度。/status 不排队进 GPU 线程，所以 GPU 忙着的时候照样读得到——
+# 这才使得前端能在等 /load 返回的同时轮询出真实进度，而不是画一根假的滚动条。
+_PROG = {"phase": "", "done": 0, "total": 0}
+
+
+def progress(phase, done=0, total=0):
+    _PROG.update(phase=phase, done=done, total=total)
+
 # 所有 GPU 计算都排到这一个固定线程上执行。
 #
 # 这不是为了「串行化」（那用一把锁就够了），而是因为 CUDA 的 per-thread 初始化很贵：
@@ -246,6 +254,8 @@ class Handler(BaseHTTPRequestHandler):
                         "bench": _CUR["bench"], "loaded": _CUR["id"],
                         "load_ms": _CUR["load_ms"],
                         "models": self.server.model_list})
+        elif self.path.startswith("/status"):
+            self._send(dict(_PROG, loaded=_CUR["id"]))
         elif self.path.startswith("/models"):
             self._send({"models": self.server.model_list, "loaded": _CUR["id"]})
         else:
@@ -333,6 +343,7 @@ def load_model_by_id(mid, args):
     m = _MODELS[mid]
     base = Path(args.base)
     t0 = time.time()
+    progress("腾显存")
     if _CUR["engine"] is not None:
         _CUR["engine"] = None
         _STATE.clear()
@@ -341,19 +352,27 @@ def load_model_by_id(mid, args):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
     lat = next(iter(sorted((base / "latents").rglob("*.pt"))))
+    progress("载入权重")
     eng = Engine(base / m["unet"], base / m["vae"], lat,
                  args.device, args.steps, args.noise_level)
-    _CUR.update(id=mid, engine=eng, load_ms=round((time.time() - t0) * 1000),
-                bench=benchmark(eng, args.bench) if args.bench else None)
+    load_ms = round((time.time() - t0) * 1000)
+    bench = benchmark(eng, args.bench) if args.bench else None
+    _CUR.update(id=mid, engine=eng, load_ms=load_ms, bench=bench)
+    progress("")
     return _CUR
 
 
 def benchmark(eng, n=20):
     """预热 + 计时。第一帧含 CUDA 上下文和 kernel 自动调优，必须丢掉。"""
+    progress("预热", 0, n + 3)
     s = eng.new_session(seed=0)
-    for _ in range(3):
+    for i in range(3):
         eng.step(s, 8)
-    ts = [eng.step(s, 8)[1] for _ in range(n)]
+        progress("预热", i + 1, n + 3)
+    ts = []
+    for i in range(n):
+        ts.append(eng.step(s, 8)[1])
+        progress("测速", i + 4, n + 3)
     ts = np.array(ts)
     r = {"n": n, "mean_ms": round(float(ts.mean() * 1000), 1),
          "p50_ms": round(float(np.median(ts) * 1000), 1),

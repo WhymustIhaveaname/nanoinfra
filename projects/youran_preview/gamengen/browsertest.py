@@ -26,6 +26,7 @@ def main():
         if not ok:
             fails.append(name)
 
+    MODEL_NAMES = {}
     with sync_playwright() as pw:
         br = pw.chromium.launch(args=["--no-sandbox", "--use-gl=swiftshader"])
         pg = br.new_page(viewport={"width": 1500, "height": 1000})
@@ -54,6 +55,10 @@ def main():
         check("拿到 GPU 信息", "未启动" not in gpu and gpu != "…", gpu)
         bench = pg.locator("#g-bench").inner_text()
         check("显示了启动基准", "ms/帧" in bench, bench)
+
+        ybar = pg.evaluate("() => document.querySelector('.modelbar').getBoundingClientRect().bottom")
+        ycanvas = pg.evaluate("() => document.getElementById('screen').getBoundingClientRect().top")
+        check("模型区在画布上方", ybar <= ycanvas, f"modelbar底={ybar:.0f} canvas顶={ycanvas:.0f}")
 
         print("3) 开局画面")
         pg.wait_for_timeout(3000)
@@ -133,8 +138,37 @@ def main():
             check(f"选 {v} 倍速", str(got) == want, f"G.speed={got}")
         pg.select_option("#g-speed", "1")
 
+        print("6b) 选了模型不载入就不能玩")
+        MODEL_NAMES.update(dict(zip(
+            pg.eval_on_selector_all("#g-model option", "e=>e.map(x=>x.value)"),
+            pg.eval_on_selector_all("#g-model option", "e=>e.map(x=>x.textContent)"))))
+        cur0 = pg.input_value("#g-model")
+        other0 = [o for o in pg.eval_on_selector_all("#g-model option", "e=>e.map(x=>x.value)")
+                  if o != cur0][0]
+        pg.select_option("#g-model", other0)
+        pg.wait_for_timeout(400)
+        check("有醒目提示", "载入" in pg.locator("#g-stale").inner_text(),
+              pg.locator("#g-stale").inner_text())
+        check("确认框仍写着实际在跑的那个",
+              pg.locator("#g-runname").inner_text() == MODEL_NAMES[cur0],
+              f"确认框={pg.locator('#g-runname').inner_text()} 期望={MODEL_NAMES[cur0]}")
+        check("确认框变成告警态", "stale" in (pg.get_attribute("#g-running","class") or ""))
+        before_n = int(pg.locator("#g-steps").inner_text())
+        pg.evaluate("() => { G.locked = true; G.keys.add('w'); gameLoop(); }")
+        pg.wait_for_timeout(2500)
+        pg.evaluate("() => G.keys.clear()")
+        check("不一致时按键不生成任何帧",
+              int(pg.locator("#g-steps").inner_text()) == before_n,
+              f"{before_n} -> {pg.locator('#g-steps').inner_text()}")
+        pg.select_option("#g-model", cur0)
+        pg.wait_for_timeout(400)
+        check("选回来后提示消失", pg.locator("#g-stale").inner_text().strip() == "")
+        check("确认框恢复正常态", "stale" not in (pg.get_attribute("#g-running","class") or ""))
+
         print("7) 三个模型可切换")
         opts = pg.eval_on_selector_all("#g-model option", "els => els.map(e => e.value)")
+        MODEL_NAMES.update(dict(zip(opts, pg.eval_on_selector_all(
+            "#g-model option", "els => els.map(e => e.textContent)"))))
         check("模型下拉有三项", len(opts) == 3, str(opts))
         cur_model = pg.input_value("#g-model")
         check("当前选中的就是已载入的", cur_model in opts, cur_model)
@@ -142,10 +176,17 @@ def main():
         other = [o for o in opts if o != cur_model][0]
         pg.select_option("#g-model", other)
         pg.click("#g-loadmodel")
+        pg.wait_for_timeout(1800)
+        check("载入时进度条可见", pg.locator("#g-progwrap").is_visible())
+        ptext = pg.locator("#g-progtext").inner_text()
+        check("进度条有阶段和秒数", ("预热" in ptext or "测速" in ptext
+              or "载入" in ptext or "腾显存" in ptext or "准备" in ptext) and "s" in ptext, ptext)
         pg.wait_for_selector("#g-loadmodel:not([disabled])", timeout=300000)
         pg.wait_for_timeout(2500)
         gpu2 = pg.locator("#g-gpu").inner_text()
         check(f"切到 {other} 成功", "失败" not in gpu2 and "上下文" in gpu2, gpu2)
+        check("确认框跟着更新", pg.locator("#g-runname").inner_text() == MODEL_NAMES[other],
+              pg.locator("#g-runname").inner_text())
         # 两家的上下文长度不同，切换后这个数字必须跟着变
         buf = gpu2.split("上下文")[1].strip().split()[0]
         check("上下文帧数随模型变化", buf in ("9", "64"), f"读到 {buf}")
