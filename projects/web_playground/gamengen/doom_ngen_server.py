@@ -99,10 +99,18 @@ def resolve_action(eng, buttons):
     for i, combo in enumerate(tbl):
         if combo == want:
             return i
+    # 退化时按「保住哪个键」打分，而不是单纯比子集大小。
+    # 只比大小、平手取表里靠前的那个，会让 Masao 表下按 W+A 退成纯左平移
+    # （MLEFT 是 id 7，排在 FWD=8 前面），前进被整个丢掉，手感很怪。
+    # 移动意图（前进/后退）最该保住，其次转向，再次平移。
+    WEIGHT = {"FWD": 4, "BACK": 4, "TLEFT": 2, "TRIGHT": 2,
+              "MLEFT": 1, "MRIGHT": 1, "ATTACK": 4}
     best, best_i = -1, None
     for i, combo in enumerate(tbl):
-        if combo and combo <= want and len(combo) > best:
-            best, best_i = len(combo), i
+        if combo and combo <= want:
+            score = sum(WEIGHT.get(b, 1) for b in combo)
+            if score > best:
+                best, best_i = score, i
     return best_i
 
 _STATE = {}                     # sid -> session
@@ -203,7 +211,7 @@ class Engine:
         # 上游那两个演示 GIF 就是这么跑的——动作来自 PPO agent 的真实轨迹，
         # 而不是人乱按。人的按法（对着墙按住前进 20 帧）在训练分布之外。
         s = {"ctx": ctx, "acts": acts, "steps": 0, "png": to_png(init),
-             "src_at": start + self.buffer}
+             "src_at": start + self.buffer, "model": _CUR.get("id")}
         # 空跑一帧把一次性成本吃掉。实测第一次 next_latent 要 4.9 秒而之后只要 0.3 秒
         # ——cuDNN 在新形状上自动调优 + GPU 升频。不预热的话玩家按下第一个键会卡 5 秒。
         # next_latent 不改动入参，所以结果丢掉即可，session 状态不受影响。
@@ -237,7 +245,10 @@ class Engine:
             actions=s["acts"].unsqueeze(0), skip_action_conditioning=False,
             num_inference_steps=self.steps, do_classifier_free_guidance=True,
             guidance_scale=CFG_GUIDANCE_SCALE,
-            discretized_noise_level=(self.noise_level if noise is None else int(noise)),
+            # 钳到 0..NUM_BUCKETS-1：这个值直接当 class_labels 查 embedding，
+            # 越界会 IndexError 而不是报参数错。
+            discretized_noise_level=(self.noise_level if noise is None
+                                     else max(0, min(9, int(noise)))),
         )
         if self.device.type == "cuda":
             torch.cuda.synchronize()
@@ -296,9 +307,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/info"):
             eng = _CUR["engine"]
             if eng is None:
+                # 换模型的窗口期会走到这里（_CUR["engine"] 被置 None）。
+                # 此刻没有已载入的模型，就不要谎报动作表和上下文长度。
                 return self._send({"loaded": None, "models": self.server.model_list,
-                                   "actions": ACTIONS, "buffer": BUFFER_SIZE,
-                                   "res": "320x256"})
+                                   "loading": True, "res": "320x256"})
             self._send({"actions": table_of(eng), "steps": eng.steps,
                         "has_noop": "" in table_of(eng),
                         "device": str(eng.device),
@@ -362,11 +374,31 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send({"error": "no_action",
                                        "detail": "这个模型的动作表里没有对应项"}, 422)
                 req["action"] = act
+            # 必须校验：越界的 id 进 nn.Embedding 会触发 CUDA device-side assert，
+            # 而那个 assert 是进程级粘性的——之后每个任务都失败，但 /info 和 /status
+            # 仍然正常应答，看起来像「服务活着只是不干活」。宁可这里回 400。
+            n_act = eng.action_embedding.num_embeddings
             try:
-                png, dt = run_on_gpu(
-                    lambda: eng.step(s, req.get("action", 0), req.get("noise")), timeout=90)
+                act_id = int(req.get("action", 0))
+            except (TypeError, ValueError):
+                return self._send({"error": "action 必须是整数"}, 400)
+            if not 0 <= act_id < n_act:
+                return self._send({"error": f"action {act_id} 越界，本模型只有 {n_act} 个"}, 400)
+            req["action"] = act_id
+            # 在 GPU 线程内重新取一次引擎并核对模型 id：HTTP 线程里取到的 eng
+            # 可能已经被并发的 /load 换掉了，继续用它会让旧模型的显存放不掉，
+            # 而且会拿旧模型出帧——界面显示 A、实际跑 B，正是要避免的那种错。
+            def _do():
+                cur = _CUR["engine"]
+                if cur is None or _CUR["id"] != s.get("model"):
+                    raise RuntimeError("模型已切换，这局作废")
+                return cur.step(s, req["action"], req.get("noise"))
+            try:
+                png, dt = run_on_gpu(_do, timeout=90)
             except TimeoutError:
                 return self._send({"error": "busy"}, 503)
+            except RuntimeError as e:
+                return self._send({"error": str(e)}, 410)
             self._send({"frame": b64(png), "steps": s["steps"],
                         "ms": round(dt * 1000, 1),
                         "action": table_of(eng)[int(req.get("action", 0))] or "NOOP",
@@ -426,6 +458,7 @@ def load_model_by_id(mid, args, rebench=False):
     base = Path(args.base)
     t0 = time.time()
     progress("腾显存")
+    _CUR["id"] = None          # 载入失败时不要继续声称旧模型还在
     if _CUR["engine"] is not None:
         _CUR["engine"] = None
         _STATE.clear()
@@ -433,7 +466,8 @@ def load_model_by_id(mid, args, rebench=False):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    lat = next(iter(sorted((base / "latents").rglob("*.pt"))))
+    lat = Path(args.latents) if args.latents else \
+          next(iter(sorted((base / "latents").rglob("*.pt"))))
     progress("载入权重")
     eng = Engine(base / m["unet"], base / m["vae"], lat,
                  args.device, args.steps, args.noise_level)

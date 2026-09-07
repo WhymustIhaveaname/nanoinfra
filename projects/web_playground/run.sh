@@ -15,7 +15,7 @@ cd "$(dirname "$0")"
 PAGE_PORT=$(cat .port 2>/dev/null || echo 25676)
 GAME_PORT=25677
 WHAT=${1:-all}
-mkdir -p outputs
+mkdir -p outputs outputs/gamengen
 
 start_page() {
   nohup ../../.venv/bin/python -m http.server "$PAGE_PORT" --bind 0.0.0.0 \
@@ -31,7 +31,7 @@ start_game() {
           --port "$GAME_PORT" --bind 0.0.0.0 --bench 25 \
           > outputs/gamengen/server.log 2>&1 &
   echo $! > outputs/game.pid
-  echo "推理   :$GAME_PORT  (pid $(cat outputs/game.pid))  模型加载+基准约 100 秒，稍等"
+  echo "推理   :$GAME_PORT  (pid $(cat outputs/game.pid))  模型加载+基准约 20 秒，稍等"
 }
 
 case "$WHAT" in

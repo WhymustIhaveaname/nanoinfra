@@ -1,11 +1,12 @@
 """browsertest.py — 用无头 Chrome 真的把页面打开、真的按键，验证前端不是纸上谈兵。
 
 playtest.py 验的是「动作发过去，模型回的画面对不对」，走的是 HTTP 接口，绕过了整个前端。
-这里补的是另一半：页面能不能加载、标签能不能切、Pointer Lock 能不能锁、
-键盘和鼠标事件能不能变成正确的动作、canvas 上的像素有没有真的在变。
+这里补的是另一半：页面能不能加载、标签能不能切、按键状态能不能变成正确的
+按钮上报、canvas 上的像素有没有真的在变。
 
-Pointer Lock 在无头 Chrome 里需要 --enable-features 之类的开关才可靠，所以这里
-不依赖它：直接注入事件并调用页面内部的 gameLoop，验证的是同一条代码路径。
+注意边界：本测试**不派发真实的键盘/鼠标事件**，而是直接设置 G.keys / G.dx
+再调 gameLoop。所以 index.html 里的 keydown/keyup/mousemove/mousedown 和
+Pointer Lock 那几个 handler 是**没被覆盖到**的。
 """
 
 import argparse
@@ -243,12 +244,7 @@ def main():
         check("回到数据页记得上次看的是 bots_long",
               "on" in (subs.nth(2).get_attribute("class") or ""))
 
-        # 第 7 步故意指向死端口，浏览器必然记一条连接失败——那是测试自己造的，
-        # 不是页面的问题，所以从最终判定里剔掉。
-        real = [e for e in errs if "25699" not in e
-                and "ERR_CONNECTION_REFUSED" not in e]
-        check("全程无 JS 报错（排除故意造的连接失败）", not real,
-              str(real[:2]) if real else "")
+        check("全程无 JS 报错", not errs, str(errs[:2]) if errs else "")
         br.close()
 
     print()

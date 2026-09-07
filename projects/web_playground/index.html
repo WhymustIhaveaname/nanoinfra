@@ -254,7 +254,7 @@ async function gameNew() {
     $('g-fps').textContent = '— fps';
   } catch (e) {
     $('g-err').innerHTML = `<span class="bad">连不上推理服务 ${GAME_API}。`
-      + `请确认 gamengen/server.py 在跑。</span>`;
+      + `请确认 gamengen/doom_ngen_server.py 在跑。</span>`;
   }
 }
 
@@ -270,14 +270,24 @@ function hasInput() {
 async function gameLoop() {
   if (!G.locked || G.stepping || G.stale) return;
   if (!hasInput()) return;                 // 松手就停在这里
-  if (!G.sid) { await gameNew(); if (!G.sid) return; }
+  // 守卫必须设在任何 await 之前。设在 gameNew() 之后的话，开局那 0.5-3 秒里
+  // 键盘自动重复会再进来一次，开出第二个 session 和第二条自调度链，
+  // 两局的帧交替画在同一块画布上，帧率减半。
   G.stepping = true;
+  if (!G.sid) { await gameNew(); if (!G.sid) { G.stepping = false; return; } }
   const buttons = pickButtons();
   const t0 = performance.now();
   try {
     const r = await fetch(GAME_API + '/step', {
       method: 'POST', body: JSON.stringify({id: G.sid, buttons})});
-    if (r.status === 410) { G.sid = null; G.stepping = false; return gameLoop(); }
+    if (r.status === 410) {        // session 失效（或模型被换掉）
+      G.sid = null; G.stepping = false;
+      // buttons 已经把 dx 和 fire 消费掉了，补回去，否则这一下鼠标转向会丢
+      if (buttons.includes('TLEFT'))  G.dx -= TURN_DEADZONE + 1;
+      if (buttons.includes('TRIGHT')) G.dx += TURN_DEADZONE + 1;
+      if (buttons.includes('ATTACK')) G.fire = true;
+      return gameLoop();
+    }
     if (r.status === 422) {          // 这个模型的表里没有这组按键（比如 a16z 没有 NOOP）
       $('g-act').textContent = '该模型无此动作';
       G.stepping = false; return;
@@ -288,7 +298,8 @@ async function gameLoop() {
     const wall = performance.now() - t0;
     // 丢掉本局第一帧：它带着 cuDNN 自动调优和 GPU 升频的一次性成本，算进均值会
     // 让显示的 fps 长时间偏低一大截。服务端也已经预热过一帧，这里是双保险。
-    if (G.steps > 0) { G.times.push(wall); if (G.times.length > 15) G.times.shift(); }
+    // d.steps 是服务端自增后的值，第一帧就是 1，所以不能用它判断。
+    if (d.steps > 1) { G.times.push(wall); if (G.times.length > 15) G.times.shift(); }
     const mean = G.times.length ? G.times.reduce((a, b) => a + b, 0) / G.times.length : wall;
     $('g-ms').textContent = d.ms.toFixed(0);
     $('g-steps').textContent = d.steps;
@@ -445,8 +456,9 @@ function probeServer() {
 }
 
 /* ==================== 数据预览 ==================== */
+// 两个 json 都要兜底：试玩不依赖它们，不该被一个静态文件拖死。
 Promise.all([
-  fetch('outputs/manifest.json').then(r => r.json()),
+  fetch('outputs/manifest.json').then(r => r.json()).catch(() => []),
   fetch('outputs/videos.json').then(r => r.json()).catch(() => ({})),
 ]).then(([groups, vids]) => {
   const main = document.getElementById('main');

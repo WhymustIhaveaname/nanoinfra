@@ -2,9 +2,9 @@
 
 ## [NOTE] 2026-09-06 — 录制器的三个 layer 实际上是同一样东西
 
-`exemplars/nano_world_model/data/recipes/minrec.yaml` 声明了 `bots 0.45 / bots_long 0.10 / pans 0.45`，头部注释把它们描述成两类功能不同的数据：bot 死斗世界提供 dynamics（世界自己会动），pans 做 action-semantics hygiene（按住不放的转身 + 左右对称配额，把「按键→画面」教干净）。**发布出来的这版代码产不出这个区分。** 塌了两次，方向相反：一是 actor 塌了，`run.py:62` 三层一律用 `PansPolicy`，那个会编排「看见实体→转开→回头再看」的 `EventPolicy` 在 `policies.py` 里定义了但从没被 import（`run.py:60` 注释自己承认 "here every layer IS the library"）；二是 world 塌了，`pans` 本该跑在 `WORLD_ASLEEP`（除了自己什么都不动的静态世界），但配方写死 `world_bots_frac: 1.0`，而 `run_episode` 对非 bot 世界直接 `raise`，那条路是死的。第一次塌把 bots 拽成 pans 的行为，第二次塌把 pans 拽进 bots 的世界，最后完全重合。**注意结论的方向：不是 pans 丢了性格，是整个语料在行为上全都是 pans。**
+`exemplars/nano_world_model/data/recipes/minrec.yaml` 声明了 `bots 0.45 / bots_long 0.10 / pans 0.45`，头部注释把它们描述成两类功能不同的数据：bot 死斗世界提供 dynamics（世界自己会动），pans 做 action-semantics hygiene（按住不放的转身 + 左右对称配额，把「按键→画面」教干净）。**发布出来的这版代码产不出这个区分。** 塌了两次，方向相反：一是 actor 塌了，`run.py:62` 三层一律用 `PansPolicy`（`run.py:61` 注释自己承认 "here every layer IS the library"）。`policies.py` 的 docstring 还吹嘘了一个会编排「看见实体→转开→回头再看」的 `EventPolicy`，但**全仓库根本没有这个类**，只有那行 docstring 提到它；二是 world 塌了，`pans` 本该跑在 `WORLD_ASLEEP`（除了自己什么都不动的静态世界），但配方写死 `world_bots_frac: 1.0`，而 `run_episode` 对非 bot 世界直接 `raise`，那条路是死的。第一次塌把 bots 拽成 pans 的行为，第二次塌把 pans 拽进 bots 的世界，最后完全重合。**注意结论的方向：不是 pans 丢了性格，是整个语料在行为上全都是 pans。**
 
-穷举下来，三层真正的区别只有三条：**每集帧数**（4000 / 21000 / 4000，bots 与 pans 相同，这是唯一影响数据的一条，决定能切多长的 clip、以及「每 8 集留 1 集」的 val 粒度）；**sidecar 里一个 layer 标签**（`shards.py` 逐帧和逐集都写了，但 `encode.py` / `build_cache.py` / `dataset.py` 没有一处读它，到不了训练管线）；**一次多余的随机数抽取**（pans 分支会调 `rng.random()` 决定 world，bots 不调，结果恒为 WORLD_BOTS，但随机流被推前一格，所以同种子下两者录像不会字节相同——是死分支留下的痕迹，不是设计）。实测印证：三层的段长中位数都是 8 tic（`seg_tics` 的下界，即 committed turn），左右转向份额都对称（样本最大的 bots_long 21000 帧是 26.2% 对 26.3%），也就是 pans 的签名出现在每一层里。所以 `layers` 这个配置实质上只是一个旋钮——**多大比例的集是长集**，0.45/0.10/0.45 翻译过来就是「90% 短集、10% 长集」。要拿回配方头部描述的那个对照，得接通 `WORLD_ASLEEP` 或者向苏老师要研究线那份 `EventPolicy` 调度。附带一提，`monsters.roster` / `monsters.k` / `monsters.awake_frac` 这三个配方键录制器根本不读，只有 `monsters.walkable_mask` 是活的。
+穷举下来，三层真正的区别只有三条：**每集帧数**（4000 / 21000 / 4000，bots 与 pans 相同，这是唯一影响数据的一条，决定能切多长的 clip、以及「每 8 集留 1 集」的 val 粒度）；**sidecar 里一个 layer 标签**（`shards.py` 逐帧和逐集都写了，但 `encode.py` / `build_cache.py` / `dataset.py` 没有一处读它，到不了训练管线）；**一次多余的随机数抽取**（pans 分支会调 `rng.random()` 决定 world，bots 不调，结果恒为 WORLD_BOTS，但随机流被推前一格，所以同种子下两者录像不会字节相同——是死分支留下的痕迹，不是设计）。实测印证：三层的段长中位数都是 8 tic（`seg_tics` 的下界，即 committed turn），左右转向份额都对称（样本最大的 bots_long 21000 帧是 26.2% 对 26.3%），也就是 pans 的签名出现在每一层里。所以 `layers` 这个配置实质上只是一个旋钮——**多大比例的集是长集**，0.45/0.10/0.45 翻译过来就是「90% 短集、10% 长集」。要拿回配方头部描述的那个对照，得接通 `WORLD_ASLEEP` 或者向苏老师要研究线那份事件调度（docstring 里叫 EventPolicy，本仓库没有）。附带一提，`monsters.roster` / `monsters.k` / `monsters.awake_frac` 这三个配方键录制器根本不读，只有 `monsters.walkable_mask` 是活的。
 
 ## [IDEA] 2026-09-06 — 录制时关掉底部状态条
 
@@ -22,7 +22,7 @@
 
 ## [IDEA] 2026-09-06 — 玩家策略像随机游走，而且总撞墙
 
-看录像的直观感受：动作缺乏目的性，撞墙频繁。量化了一下——统计"按着前进族按键但位移 < 2 单位"的帧占前进帧的比例：**bots 39.6%、bots_long 26.8%、pans 21.1%**。也就是说四分之一到五分之二的前进指令是在推墙。代码里已经有三层补救（`walkable_mask` 射线避墙、位移真值检测的 blocked 计数、以及卡死后转身+前进乃至 `warp` 传送逃脱），说明作者知道这个毛病，但这些是事后补丁，不是导航。根子在于 `coverage_policy` 是盲的：它只按配额抽动作段，完全不看地形。可能的方向是给策略一个粗粒度的目标点（`walkable.npz` 里已经有可行走格的并集，现成的），让动作段在"朝目标走"的框架内做覆盖，而不是纯随机游走后再靠撞墙检测救场。
+看录像的直观感受：动作缺乏目的性，撞墙频繁。量化了一下——统计"按着前进族按键但位移 < 2 单位"的帧占前进帧的比例：**bots 39.6%、bots_long 26.8%、pans 21.1%**。也就是说五分之一到五分之二的前进指令是在推墙。代码里已经有三层补救（`walkable_mask` 射线避墙、位移真值检测的 blocked 计数、以及卡死后转身+前进乃至 `warp` 传送逃脱），说明作者知道这个毛病，但这些是事后补丁，不是导航。根子在于 `coverage_policy` 是盲的：它只按配额抽动作段，完全不看地形。可能的方向是给策略一个粗粒度的目标点（`walkable.npz` 里已经有可行走格的并集，现成的），让动作段在"朝目标走"的框架内做覆盖，而不是纯随机游走后再靠撞墙检测救场。
 
 ## [IDEA] 2026-09-06 — 宽高比被压扁了，应该保持 4:3
 

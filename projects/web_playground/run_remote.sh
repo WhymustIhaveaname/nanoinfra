@@ -13,7 +13,7 @@
 # 陛下的浏览器里跑的，它连的是这台机器的 IP 而不是 127.0.0.1。
 #
 # 落在 1202b 的哪里：/tmp。那台机器 /tmp 是 2TB tmpfs 而它有 4TB 内存，
-# 放 18GB 权重毫无压力；AFS 家目录只有 4.8GB 配额装不下，而 /var/tmp 只剩 23G
+# 放 12GB 权重加 5GB venv 毫无压力；AFS 家目录只有 4.8GB 配额装不下，而 /var/tmp 只剩 23G
 # 且属于系统 /var，写满会伤到机器。代价是重启后要重跑本脚本的 setup。
 #
 #   ./run_remote.sh setup     # 首次：装环境 + 下权重（约 20 分钟）
@@ -29,6 +29,8 @@ HOST=${GAMENGEN_HOST:-1202b}
 GPU=${GAMENGEN_GPU:-1}          # 远端用第几张卡
 PORT=25677
 B=/tmp/youran-gamengen
+
+mkdir -p outputs outputs/gamengen
 
 remote() { ssh -o BatchMode=yes "$HOST" bash -s; }
 
@@ -52,7 +54,7 @@ EOS
   echo "[2/3] 传代码"
   tar cz gamengen/doom_ngen_server.py gamengen/models.json gamengen/upstream \
     | ssh -o BatchMode=yes "$HOST" "mkdir -p $B/app && tar xz -C $B/app"
-  echo "[3/3] 下权重（约 18GB）"
+  echo "[3/3] 下权重（约 12GB）"
   remote <<EOS
 $B/.venv/bin/python - <<'PY'
 from huggingface_hub import snapshot_download, hf_hub_download, HfApi
@@ -95,7 +97,8 @@ EOS
 
   # 本机若有服务占着这个端口，先让位
   LOCAL=$(ps -u "$(whoami)" -o pid,cmd | grep "[d]oom_ngen_server.py --port $PORT" | awk '{print $1}')
-  [ -n "$LOCAL" ] && kill "$LOCAL" && echo "  本机推理服务已停，显卡释放"
+  # 不加引号：$LOCAL 可能是多个 pid，引起来会被当成单个参数而 kill 失败
+  [ -n "$LOCAL" ] && kill $LOCAL && echo "  本机推理服务已停，显卡释放"
   pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" 2>/dev/null
   sleep 2
   nohup ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \

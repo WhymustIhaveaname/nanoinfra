@@ -42,7 +42,7 @@ bash run_remote.sh stop     # stop both
 
 1. It installs `uv`, Python 3.12, and the packages on 1202b.
 2. It copies `doom_ngen_server.py`, `models.json`, and `upstream/` to 1202b.
-3. It downloads 18 GB of weights from Hugging Face.
+3. It downloads 12 GB of weights from Hugging Face.
 
 `start` does three tasks:
 
@@ -58,14 +58,15 @@ Use this only for a short test. The local GPU is slower.
 bash run.sh game
 ```
 
-Wait about 100 seconds. The server loads the model and runs a benchmark.
+Wait about 20 seconds. The server loads the model and runs a benchmark.
+A cached benchmark makes it faster. A first run for a model adds about 8 seconds.
 
 ## 5. Important facts
 
 **1202b uses AFS for the home directory. AFS has a 4.8 GB quota.**
-The weights are 18 GB. They do not fit in AFS.
+The weights are 12 GB. They do not fit in AFS.
 Put the weights in `/tmp`. `/tmp` on 1202b is a 2 TB tmpfs.
-1202b has 4 TB of RAM. 18 GB in tmpfs is safe.
+1202b has 4 TB of RAM. 12 GB of weights plus a 5 GB venv in tmpfs is safe.
 
 **tmpfs loses all files at a reboot.**
 Run `setup` again after 1202b reboots.
@@ -85,12 +86,14 @@ The browser runs on a different machine. It connects to the IP of this machine.
 
 ```bash
 cd gamengen
-.venv/bin/python browsertest.py   # 61 checks, headless Chrome
+.venv/bin/python browsertest.py   # headless Chrome, ~60 checks
 .venv/bin/python playtest.py      # scripted play, makes an MP4
 ```
 
-`browsertest.py` opens the page. It presses keys. It checks the action map.
-It checks the model switch, the load progress, and the tab layout.
+`browsertest.py` opens the page. It sets the input state and calls the step loop.
+It checks the button map, the model switch, the load progress, and the tab layout.
+It does not dispatch real keyboard or mouse events. The pointer-lock and key
+handlers stay untested.
 
 `playtest.py` sends a fixed action sequence. It saves the frames to a video.
 Look at the video. The model must respond to each action.
@@ -108,8 +111,8 @@ cd /home/youran/nanoinfra
 These scripts read from other directories in the repository:
 
 - `exemplars/nano_world_model/` for `spec`, `encode`, and `codec`
-- `datasets/nano_world_model/` for the pixels, 10.6 GB
-- `models/video/cosmos_dv4x8x8/` for the codec, 320 MB
+- `datasets/nano_world_model/` for the pixels, 11.2 GB
+- `models/video/cosmos_dv4x8x8/` for the codec, 212 MB
 
 ## 8. Problems
 

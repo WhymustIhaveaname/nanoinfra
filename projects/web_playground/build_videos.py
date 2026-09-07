@@ -51,8 +51,9 @@ def main():
     out = {}
     for tag in ("bots", "bots_long", "pans"):
         shard = spec.PIXEL_SHARD_DIR / f"pv_{tag}_0000.bin"
-        if not shard.exists():
-            print(f"  {tag}: 没有像素分片，跳过")
+        sc_path = spec.SIDECAR_DIR / f"pv_{tag}_0000_sc.npz"
+        if not shard.exists() or not sc_path.exists():
+            print(f"  {tag}: 缺像素分片或 sidecar，跳过")
             continue
         sc = np.load(spec.SIDECAR_DIR / f"pv_{tag}_0000_sc.npz", allow_pickle=True)
         h, w = int(sc["h"]), int(sc["w"])
@@ -77,7 +78,7 @@ def main():
                     "mb": round(mb, 1)}
         print(f"  {tag}: 截 {n} 帧 / 整集 {total} 帧, {mb:.1f} MB")
 
-    (OUT.parent / "outputs" / "videos.json").write_text(
+    (OUT.parent / "videos.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\n-> videos.json ({len(out)} 段)")
 
