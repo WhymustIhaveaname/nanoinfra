@@ -72,6 +72,8 @@
   .acts { font-family: ui-monospace, Menlo, monospace; font-size: 11px;
           color: var(--dim); line-height: 1.9; margin-top: 8px; }
   .acts span { background: #1e222b; padding: 1px 4px; border-radius: 3px; margin-right: 3px; }
+  #g-recacts span { cursor: pointer; }
+  #g-recacts span:hover { outline: 1px solid var(--accent); }
   .acts span.now { background: var(--accent); color: #0f1115; }
   .hint { color: var(--warn); font-size: 12px; margin-top: 8px; }
 
@@ -99,6 +101,10 @@
              background: rgba(15,17,21,.82); color: var(--fg); font-size: 15px;
              border-radius: 4px; pointer-events: none; }
   .rel { position: relative; width: 640px; }
+  #g-unsupported { position: absolute; left: 0; right: 0; bottom: 14px;
+                   text-align: center; pointer-events: none; opacity: 0;
+                   transition: opacity .18s; color: var(--warn); font-size: 14px;
+                   text-shadow: 0 1px 4px #000, 0 0 10px #000; }
   .modelbar { border: 1px solid var(--line); border-radius: 6px;
               padding: 12px 14px; margin-bottom: 14px; background: #13161c; }
   .bar { height: 6px; background: #1e222b; border-radius: 3px; overflow: hidden; }
@@ -151,7 +157,15 @@
         <div class="rel">
           <canvas id="screen" width="320" height="256"></canvas>
           <div id="overlay">点击画面开始 · 按键才生成，松手定格 · Esc 退出</div>
+          <div id="g-unsupported"></div>
         </div>
+        <div id="g-recbar" style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+          <button class="btn" id="g-replay">▶ 回放本局</button>
+          <label>帧 <input type="range" id="g-scrub" min="0" max="0" value="0" style="width:260px">
+            <span class="val" id="g-scrubv">0 / 0</span></label>
+          <span class="mono" id="g-recact"></span>
+        </div>
+        <div class="acts" id="g-recacts" style="margin-top:6px;max-height:66px;overflow-y:auto"></div>
         <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
           <button class="btn" id="g-new">↻ 新开一局</button>
           <label>速度
@@ -209,8 +223,11 @@ const G = {
   sid: null, locked: false, stepping: false, speed: 1, steps: 0,
   keys: new Set(), dx: 0, fire: false, times: [],
   loaded: null,      // 显存里真正装着的模型 id
-  hasNoop: false,    // 当前模型有没有「不动」这个动作
+  hasNoop: false, hasBack: false,   // 当前模型支持哪些动作
   heldButtons: null, repeatLeft: 0,   // 当前这组按键还要再发几帧
+  // 本局回放：每帧存下画面和当时的动作。上限 600 帧（约 2 分钟），
+  // 超了就丢最老的——一帧 PNG 约 100KB，不设上限会把浏览器内存吃光。
+  rec: [], recMax: 600,
   stale: false,      // 下拉框选的和 loaded 不一致 —— 此时禁止游玩
 };
 
@@ -219,6 +236,55 @@ const TURN_DEADZONE = 6;      // 鼠标累计位移超过这个才算转向，�
 
 // 只报按下了哪些键。翻成动作 id 是服务端的事——两家模型的表不一样，
 // 前端写死 id 会让按键含义整体错位。
+// ---- 本局回放 ----
+function updateRecUI() {
+  const n = G.rec.length;
+  $('g-scrub').max = Math.max(0, n - 1);
+  $('g-replay').disabled = n === 0;
+  if (!G.replaying) {
+    $('g-scrub').value = Math.max(0, n - 1);
+    $('g-scrubv').textContent = n ? `${n} / ${n}` : '0 / 0';
+    $('g-recact').textContent = n ? `已记录 ${n} 帧` : '还没有帧';
+  }
+  // 动作历史：和数据预览那边同一套样式，最近 120 帧
+  const from = Math.max(0, n - 120);
+  $('g-recacts').innerHTML = G.rec.slice(from).map((r, k) =>
+    `<span data-i="${from + k}">${r.action}</span>`).join('');
+  const box = $('g-recacts');
+  if (!G.replaying) box.scrollTop = box.scrollHeight;
+}
+
+function showRecFrame(i) {
+  const r = G.rec[i];
+  if (!r) return;
+  drawFrame(r.frame);
+  $('g-scrub').value = i;
+  $('g-scrubv').textContent = `${i + 1} / ${G.rec.length}`;
+  for (const el of $('g-recacts').children)
+    el.className = (+el.dataset.i === i) ? 'now' : '';
+  $('g-recact').textContent = `动作 ${r.action} · ${r.ms} ms`;
+}
+
+function startReplay() {
+  if (!G.rec.length) return;
+  // 回放期间禁止再生成新帧，否则实时画面会和回放抢同一块 canvas
+  G.replaying = true;
+  $('g-replay').textContent = '⏹ 停止回放';
+  let i = 0;
+  G.replayTimer = setInterval(() => {
+    if (i >= G.rec.length) { stopReplay(); return; }
+    showRecFrame(i++);
+  }, 1000 / 8);          // 固定 8 fps 回放，和数据页那边一致
+}
+
+function stopReplay() {
+  if (G.replayTimer) clearInterval(G.replayTimer);
+  G.replayTimer = null;
+  G.replaying = false;
+  const b = $('g-replay');
+  if (b) b.textContent = '▶ 回放本局';
+}
+
 function pickButtons() {
   let turn = 0;
   if (G.dx >  TURN_DEADZONE) turn =  1;
@@ -240,6 +306,16 @@ function pickButtons() {
 
 const $ = id => document.getElementById(id);
 
+// 当前模型没有这个动作时的提示。同一个键连按不重复刷，2 秒后自己消失。
+let _nsTimer = null;
+function notSupported(what) {
+  const el = $('g-unsupported');
+  el.textContent = `${what}：当前模型没有这个动作`;
+  el.style.opacity = '1';
+  clearTimeout(_nsTimer);
+  _nsTimer = setTimeout(() => { el.style.opacity = '0'; }, 2000);
+}
+
 function drawFrame(dataUrl) {
   const img = new Image();
   img.onload = () => $('screen').getContext('2d').drawImage(img, 0, 0);
@@ -251,7 +327,7 @@ async function gameNew() {
   try {
     const r = await fetch(GAME_API + '/new', {method: 'POST', body: JSON.stringify({})});
     const d = await r.json();
-    G.sid = d.id; G.steps = 0; G.times = [];
+    G.sid = d.id; G.steps = 0; G.times = []; G.rec = []; stopReplay(); updateRecUI();
     drawFrame(d.frame);
     $('g-steps').textContent = '0';
     $('g-fps').textContent = '— fps';
@@ -274,7 +350,7 @@ function hasInput() {
 }
 
 async function gameLoop() {
-  if (!G.locked || G.stepping || G.stale) return;
+  if (!G.locked || G.stepping || G.stale || G.replaying) return;
   if (!hasInput()) return;                 // 松手就停在这里
   // 守卫必须设在任何 await 之前。设在 gameNew() 之后的话，开局那 0.5-3 秒里
   // 键盘自动重复会再进来一次，开出第二个 session 和第二条自调度链，
@@ -313,6 +389,9 @@ async function gameLoop() {
     // 判据必须是「还有没有输入」，不能只看鼠标锁——松的通常是键，不是锁。
     if (!hasInput()) { G.stepping = false; return; }
     drawFrame(d.frame);
+    G.rec.push({frame: d.frame, action: d.action, ms: d.ms});
+    if (G.rec.length > G.recMax) G.rec.shift();
+    updateRecUI();
     G.steps = d.steps;
     const wall = performance.now() - t0;
     // 丢掉本局第一帧：它带着 cuDNN 自动调优和 GPU 升频的一次性成本，算进均值会
@@ -350,13 +429,23 @@ function initGame() {
   });
   addEventListener('keydown', e => {
     if (document.pointerLockElement === cv) {
-      G.keys.add(e.key.toLowerCase());
-      if (['w','a','s','d',' '].includes(e.key.toLowerCase())) e.preventDefault();
+      const k = e.key.toLowerCase();
+      G.keys.add(k);
+      if (['w','a','s','d',' '].includes(k)) e.preventDefault();
+      // 按了这个模型没有的键就说一声。静悄悄不响应，用户只会以为坏了。
+      if (k === ' ' && !G.hasNoop) notSupported('空格（无动作）');
+      if (k === 's'  && !G.hasBack) notSupported('S（后退）');
       gameLoop();
     }
   });
   addEventListener('keyup', e => { G.keys.delete(e.key.toLowerCase());
     if (!hasInput()) { G.repeatLeft = 0; G.heldButtons = null; } });
+  $('g-replay').onclick = () => G.replaying ? stopReplay() : startReplay();
+  $('g-scrub').oninput = e => { stopReplay(); showRecFrame(+e.target.value); };
+  $('g-recacts').onclick = e => {
+    const i = e.target.dataset && e.target.dataset.i;
+    if (i !== undefined) { stopReplay(); showRecFrame(+i); }
+  };
   $('g-new').onclick = gameNew;
   $('g-loadmodel').onclick = loadModel;
   $('g-model').onchange = () => { showModelNote(); syncModelState(); };
@@ -409,6 +498,16 @@ function showModelNote() {
 
 async function loadModel() {
   const $ = id => document.getElementById(id);
+
+// 当前模型没有这个动作时的提示。同一个键连按不重复刷，2 秒后自己消失。
+let _nsTimer = null;
+function notSupported(what) {
+  const el = $('g-unsupported');
+  el.textContent = `${what}：当前模型没有这个动作`;
+  el.style.opacity = '1';
+  clearTimeout(_nsTimer);
+  _nsTimer = setTimeout(() => { el.style.opacity = '0'; }, 2000);
+}
   const id = $('g-model').value;
   const btn = $('g-loadmodel');
   G.sid = null;
@@ -445,6 +544,16 @@ async function loadModel() {
 
 function probeServer() {
   const $ = id => document.getElementById(id);
+
+// 当前模型没有这个动作时的提示。同一个键连按不重复刷，2 秒后自己消失。
+let _nsTimer = null;
+function notSupported(what) {
+  const el = $('g-unsupported');
+  el.textContent = `${what}：当前模型没有这个动作`;
+  el.style.opacity = '1';
+  clearTimeout(_nsTimer);
+  _nsTimer = setTimeout(() => { el.style.opacity = '0'; }, 2000);
+}
   fetch(GAME_API + '/info').then(r => r.json()).then(d => {
     fillModels(d.models, d.loaded);
     // 按键表随模型变：a16z 那 18 个动作里没有 BACK 也没有 NOOP
@@ -459,6 +568,7 @@ function probeServer() {
       lbl.textContent = ok ? txt : txt + '（该模型没有）';
     }
     G.hasNoop = !!d.has_noop;
+    G.hasBack = (d.actions || []).some(a => a.split('+').includes('BACK'));
     G.loaded = d.loaded;
     G.loadedName = (MODELS.find(m => m.id === d.loaded) || {}).name || d.loaded;
     $('g-gpu').textContent =

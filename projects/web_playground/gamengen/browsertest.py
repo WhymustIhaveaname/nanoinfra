@@ -174,6 +174,38 @@ def main():
         check("选回来后提示消失", pg.locator("#g-stale").inner_text().strip() == "")
         check("确认框恢复正常态", "stale" not in (pg.get_attribute("#g-running","class") or ""))
 
+        print("6c) 按下模型不支持的键要有提示")
+        pg.evaluate("() => notSupported('空格（无动作）')")
+        pg.wait_for_timeout(250)
+        msg = pg.locator("#g-unsupported").inner_text()
+        check("提示文字出现", "没有这个动作" in msg, msg)
+        op = pg.evaluate("() => getComputedStyle(document.getElementById('g-unsupported')).opacity")
+        check("提示可见", float(op) > 0.9, f"opacity={op}")
+        pg.wait_for_timeout(2400)
+        op2 = pg.evaluate("() => getComputedStyle(document.getElementById('g-unsupported')).opacity")
+        check("提示会自己消失", float(op2) < 0.1, f"opacity={op2}")
+
+        print("6d) 本局录制与回放")
+        pg.evaluate("() => { G.locked = true; G.keys.add('w'); gameLoop(); }")
+        pg.wait_for_timeout(2500)
+        pg.evaluate("() => { G.keys.clear(); G.repeatLeft = 0; }")
+        pg.wait_for_timeout(600)
+        n = pg.evaluate("() => G.rec.length")
+        check("玩过的帧被记录下来", n >= 3, f"{n} 帧")
+        check("动作历史条有格子",
+              pg.evaluate("() => document.getElementById('g-recacts').children.length") == n)
+        pg.evaluate("() => { stopReplay(); showRecFrame(1); }")
+        pg.wait_for_timeout(200)
+        check("能拖到任意一帧", pg.locator("#g-scrubv").inner_text().startswith("2 /"),
+              pg.locator("#g-scrubv").inner_text())
+        check("显示该帧的动作", "动作" in pg.locator("#g-recact").inner_text(),
+              pg.locator("#g-recact").inner_text())
+        pg.click("#g-replay"); pg.wait_for_timeout(500)
+        check("回放中不再生成新帧", pg.evaluate("() => G.replaying"))
+        pg.evaluate("() => stopReplay()")
+        pg.wait_for_timeout(200)
+        check("能停止回放", not pg.evaluate("() => G.replaying"))
+
         print("7) 三个模型可切换")
         opts = pg.eval_on_selector_all("#g-model option", "els => els.map(e => e.value)")
         MODEL_NAMES.update(dict(zip(opts, pg.eval_on_selector_all(
