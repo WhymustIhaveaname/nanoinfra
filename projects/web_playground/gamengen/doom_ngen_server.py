@@ -450,7 +450,7 @@ def main():
     threading.Thread(target=_worker, daemon=True).start()
     srv = ThreadingHTTPServer((a.bind, a.port), Handler)
     srv.args = a
-    srv.model_list = [{k: m[k] for k in ("id", "name", "note", "repo")} for m in listed]
+    srv.model_list = [{k: m[k] for k in ("id", "name", "note", "repo", "github")} for m in listed]
     first = a.model or listed[0]["id"]
     print(f"[models] 可用 {[m['id'] for m in listed]}，先载 {first}", flush=True)
     run_on_gpu(lambda: load_model_by_id(first, a), timeout=900)

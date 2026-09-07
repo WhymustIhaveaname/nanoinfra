@@ -173,6 +173,10 @@ def main():
         cur_model = pg.input_value("#g-model")
         check("当前选中的就是已载入的", cur_model in opts, cur_model)
         check("有模型说明", len(pg.locator("#g-modelnote").inner_text()) > 10)
+        links = pg.eval_on_selector_all("#g-modelnote a", "e=>e.map(x=>[x.textContent, x.href])")
+        check("说明里有代码仓库和权重两个链接", len(links) == 2, str(links))
+        check("代码链接指向 github", "github.com" in links[0][1], links[0][1])
+        check("权重链接指向 huggingface", "huggingface.co" in links[1][1], links[1][1])
         other = [o for o in opts if o != cur_model][0]
         pg.select_option("#g-model", other)
         pg.click("#g-loadmodel")
@@ -207,23 +211,6 @@ def main():
         # 基准结果落盘缓存了，第二次载入不该再测速——15 秒是宽松上界（实测 2-3 秒）
         dt = _t.time() - t_switch - 2.0
         check("已测过的模型再载入走缓存（不重测速）", dt < 15, f"耗时 {dt:.1f}s")
-
-        print("7b) 推理服务地址可切换")
-        cur = pg.input_value("#g-api")
-        check("地址框预填了当前服务", cur.endswith(":25677"), cur)
-        pg.fill("#g-api", "http://127.0.0.1:25699/")
-        pg.click("#g-apply")
-        pg.wait_for_timeout(1500)
-        check("指向不存在的服务会报错",
-              "连不上" in pg.locator("#g-err").inner_text(),
-              pg.locator("#g-err").inner_text())
-        check("地址写进了 localStorage",
-              pg.evaluate("() => localStorage.getItem('gamengen_api')") == "http://127.0.0.1:25699")
-        pg.fill("#g-api", cur)
-        pg.click("#g-apply")
-        pg.wait_for_timeout(3500)
-        check("切回去能恢复", "未启动" not in pg.locator("#g-gpu").inner_text(),
-              pg.locator("#g-gpu").inner_text())
 
         print("8) 切到数据标签")
         tabs.nth(1).click()                      # 一级：数据预览

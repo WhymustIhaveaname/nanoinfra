@@ -12,7 +12,8 @@
       "unet": "unet",
       "vae": "vae",
       "note": "上下文 64 帧。另有单独发布的微调 VAE decoder。",
-      "repo": "https://huggingface.co/Masao-Taketani/vizdoom-diffusion-dynamic-model"
+      "repo": "https://huggingface.co/Masao-Taketani/vizdoom-diffusion-dynamic-model",
+      "github": "https://github.com/Masao-Taketani/GameNGen"
     },
     {
       "id": "arnaud60k",
@@ -20,7 +21,8 @@
       "unet": "arnaud60k",
       "vae": "arnaud60k",
       "note": "上下文 9 帧。仓库名标 60k 步，README 写语料 arnaudstiegler/vizdoom-500-episodes。",
-      "repo": "https://huggingface.co/arnaudstiegler/sd-model-gameNgen-60ksteps"
+      "repo": "https://huggingface.co/arnaudstiegler/sd-model-gameNgen-60ksteps",
+      "github": "https://github.com/arnaudstiegler/gameNgen-repro"
     },
     {
       "id": "arnaud20k",
@@ -28,7 +30,8 @@
       "unet": "arnaud20k",
       "vae": "arnaud20k",
       "note": "上下文 9 帧。仓库名标 20k 步，README 写语料 P-H-B-D-a16z/ViZDoom-Deathmatch。",
-      "repo": "https://huggingface.co/arnaudstiegler/gameNgen-baseline-20ksteps"
+      "repo": "https://huggingface.co/arnaudstiegler/gameNgen-baseline-20ksteps",
+      "github": "https://github.com/arnaudstiegler/gameNgen-repro"
     }
   ]
 }

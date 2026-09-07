@@ -162,12 +162,6 @@
             </select>
           </label>
         </div>
-        <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
-          <label style="white-space:nowrap">推理服务</label>
-          <input id="g-api" class="btn" style="flex:1;min-width:200px;font-family:ui-monospace,Menlo,monospace"
-                 placeholder="http://主机:25677">
-          <button class="btn" id="g-apply">切换</button>
-        </div>
       </div>
 
       <div class="stats">
@@ -208,10 +202,9 @@ function panel(cap, src) {
 }
 
 /* ==================== 试玩 ==================== */
-// 推理服务地址可切换：默认同主机 :25677（本机 4060 Ti），也可以指到别的机器
-// （比如 1202b 的 A6000）。存在 localStorage，刷新后还在。
-let GAME_API = localStorage.getItem('gamengen_api')
-            || `http://${location.hostname}:25677`;
+// 推理服务固定在同主机 :25677。要换成别的机器（比如 1202b 的 A6000）不在这儿改，
+// 而是用 run_remote.sh 建 SSH 隧道把那台机器映射到本机这个端口——页面无需知情。
+const GAME_API = `http://${location.hostname}:25677`;
 const G = {
   sid: null, locked: false, stepping: false, speed: 1, steps: 0,
   keys: new Set(), dx: 0, fire: false, times: [],
@@ -333,13 +326,6 @@ function initGame() {
   addEventListener('keyup', e => G.keys.delete(e.key.toLowerCase()));
   $('g-new').onclick = gameNew;
   $('g-loadmodel').onclick = loadModel;
-  $('g-api').value = GAME_API;
-  $('g-apply').onclick = () => {
-    GAME_API = $('g-api').value.replace(/\/+$/, '');
-    localStorage.setItem('gamengen_api', GAME_API);
-    G.sid = null;
-    probeServer();
-  };
   $('g-model').onchange = () => { showModelNote(); syncModelState(); };
   $('g-speed').onchange = e => { G.speed = +e.target.value; };
 
@@ -384,7 +370,8 @@ function showModelNote() {
   const id = document.getElementById('g-model').value;
   const m = MODELS.find(x => x.id === id);
   document.getElementById('g-modelnote').innerHTML = m
-    ? `${m.note} <a href="${m.repo}" style="color:var(--accent)">权重</a>` : '';
+    ? `${m.note}<br><a href="${m.github}" target="_blank" style="color:var(--accent)">代码仓库</a>`
+      + ` · <a href="${m.repo}" target="_blank" style="color:var(--accent)">权重</a>` : '';
 }
 
 async function loadModel() {
