@@ -182,7 +182,7 @@
           <span><kbd>W</kbd></span><span>前进</span>
           <span><kbd>S</kbd></span><span>后退</span>
           <span><kbd>A</kbd> <kbd>D</kbd></span><span>左右平移</span>
-          <span><kbd>空格</kbd></span><span>无动作，走一帧</span>
+          <span><kbd>空格</kbd></span><span>无动作，过一帧</span>
           <span><kbd>鼠标左键</kbd></span><span>开火</span>
           <span><kbd>Esc</kbd></span><span>松开鼠标</span>
         </div>
@@ -230,7 +230,7 @@ function pickAction() {
   const left = G.keys.has('a'), right = G.keys.has('d');
   // 开火独占，和上游动作表一致
   if (G.fire) { G.fire = false; return 11; }
-  if (G.keys.has(' ') && !fwd && !back && !left && !right && !turn) return 0;  // 空格 = 无动作走一帧
+  if (G.keys.has(' ') && !fwd && !back && !left && !right && !turn) return 0;  // 空格 = 无动作过一帧
   if (turn < 0 && fwd)  return 9;
   if (turn > 0 && fwd)  return 10;
   if (turn < 0 && back) return 4;
