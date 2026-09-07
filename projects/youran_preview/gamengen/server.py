@@ -132,6 +132,8 @@ class Engine:
         # 没必要开着 pickle 的任意代码执行口子。
         self.episode = torch.load(latent_pt, map_location="cpu", weights_only=True)
         self.n_latent = len(self.episode["actions"])
+        self.gpu_name = (torch.cuda.get_device_name(self.device)
+                         if self.device.type == "cuda" else "cpu")
         print(f"[engine] 模型载入 {time.time()-t0:.1f}s, device={self.device}, "
               f"上下文 {self.buffer} 帧, 种子 episode {self.n_latent} 帧", flush=True)
 
@@ -274,7 +276,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"error": f"没有这个模型: {mid}",
                                    "known": list(_MODELS)}, 400)
             try:
-                cur = run_on_gpu(lambda: load_model_by_id(mid, self.server.args),
+                rb = bool(req.get("rebench"))
+                cur = run_on_gpu(lambda: load_model_by_id(mid, self.server.args, rb),
                                  timeout=900)
             except Exception as e:
                 return self._send({"error": f"{type(e).__name__}: {e}"}, 500)
@@ -334,7 +337,18 @@ def b64(png):
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
 
-def load_model_by_id(mid, args):
+WARMUP = 3          # 预热帧数：吃掉 cuDNN 自动调优 + GPU 升频的一次性开销
+
+
+def warmup(eng):
+    """只预热不计时。新形状的第一帧要 4.9 秒，不预热的话玩家按下第一个键会卡住。"""
+    s = eng.new_session(seed=0)
+    for i in range(WARMUP):
+        eng.step(s, 8)
+        progress("预热", i + 1, WARMUP)
+
+
+def load_model_by_id(mid, args, rebench=False):
     """换模型：先把旧的从显存里彻底清掉，再载新的。
 
     不同时驻留多个：16GB 卡上每个约 4GB，留两个就没余量给推理时的中间张量了。
@@ -356,7 +370,30 @@ def load_model_by_id(mid, args):
     eng = Engine(base / m["unet"], base / m["vae"], lat,
                  args.device, args.steps, args.noise_level)
     load_ms = round((time.time() - t0) * 1000)
-    bench = benchmark(eng, args.bench) if args.bench else None
+
+    # 基准结果按 (模型, 显卡, 去噪步数, 噪声等级) 缓存到盘上。这些量不变，
+    # 结果就不变，没道理每次换模型都重测一遍——实测那一步占换模型总耗时的一半以上。
+    # 预热不能省（新形状的首帧要 4.9 秒），但预热本来就顺带完成了。
+    key = f"{mid}|{eng.gpu_name}|{args.steps}|{args.noise_level}"
+    cache = {}
+    cpath = base / "bench_cache.json"
+    if cpath.exists():
+        try:
+            cache = json.loads(cpath.read_text())
+        except Exception:
+            cache = {}
+    if args.bench and key in cache and not rebench:
+        progress("预热", 0, WARMUP)
+        warmup(eng)
+        bench = dict(cache[key], cached=True)
+    elif args.bench:
+        bench = benchmark(eng, args.bench)
+        cache[key] = dict(bench, cached=False)
+        cpath.write_text(json.dumps(cache, ensure_ascii=False, indent=2))
+    else:
+        progress("预热", 0, WARMUP)
+        warmup(eng)
+        bench = None
     _CUR.update(id=mid, engine=eng, load_ms=load_ms, bench=bench)
     progress("")
     return _CUR
@@ -364,15 +401,15 @@ def load_model_by_id(mid, args):
 
 def benchmark(eng, n=20):
     """预热 + 计时。第一帧含 CUDA 上下文和 kernel 自动调优，必须丢掉。"""
-    progress("预热", 0, n + 3)
+    progress("预热", 0, n + WARMUP)
     s = eng.new_session(seed=0)
-    for i in range(3):
+    for i in range(WARMUP):
         eng.step(s, 8)
-        progress("预热", i + 1, n + 3)
+        progress("预热", i + 1, n + WARMUP)
     ts = []
     for i in range(n):
         ts.append(eng.step(s, 8)[1])
-        progress("测速", i + 4, n + 3)
+        progress("测速", i + 1 + WARMUP, n + WARMUP)
     ts = np.array(ts)
     r = {"n": n, "mean_ms": round(float(ts.mean() * 1000), 1),
          "p50_ms": round(float(np.median(ts) * 1000), 1),

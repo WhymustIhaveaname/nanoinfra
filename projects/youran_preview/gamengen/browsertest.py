@@ -197,11 +197,16 @@ def main():
             let s = 0; for (let i=0;i<d.length;i+=4) s += d[i]+d[i+1]+d[i+2];
             return s === 0; }""")
         check("换完模型自动开了新局（画面非全黑）", not blank2)
+        import time as _t
+        t_switch = _t.time()
         pg.select_option("#g-model", cur_model)
         pg.click("#g-loadmodel")
         pg.wait_for_selector("#g-loadmodel:not([disabled])", timeout=300000)
         pg.wait_for_timeout(2000)
         check("切回原模型", "上下文" in pg.locator("#g-gpu").inner_text())
+        # 基准结果落盘缓存了，第二次载入不该再测速——15 秒是宽松上界（实测 2-3 秒）
+        dt = _t.time() - t_switch - 2.0
+        check("已测过的模型再载入走缓存（不重测速）", dt < 15, f"耗时 {dt:.1f}s")
 
         print("7b) 推理服务地址可切换")
         cur = pg.input_value("#g-api")
