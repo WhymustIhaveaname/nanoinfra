@@ -27,8 +27,8 @@ start_page() {
 start_game() {
   # expandable_segments 治显存碎片；上下文 64 帧的 UNet 输入不小，16GB 卡上留点余量
   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
-    nohup gamengen/.venv/bin/python gamengen/server.py \
-          --port "$GAME_PORT" --bench 25 \
+    nohup gamengen/.venv/bin/python gamengen/doom_ngen_server.py \
+          --port "$GAME_PORT" --bind 0.0.0.0 --bench 25 \
           > outputs/gamengen/server.log 2>&1 &
   echo $! > outputs/game.pid
   echo "推理   :$GAME_PORT  (pid $(cat outputs/game.pid))  模型加载+基准约 100 秒，稍等"

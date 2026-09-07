@@ -433,6 +433,10 @@ def main():
     ap.add_argument("--steps", type=int, default=4, help="每帧去噪步数（论文是 4）")
     ap.add_argument("--noise-level", type=int, default=9)
     ap.add_argument("--port", type=int, default=25677)
+    # 默认只听回环。远端跑的时候只有 SSH 隧道进得来，不该对整个实验室网络敞开——
+    # 这个接口没有任何认证，谁都能连上来占显存。本机跑时由 run.sh 显式传 0.0.0.0，
+    # 因为浏览器是从别的机器访问这台机的 IP 的。
+    ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--bench", type=int, default=20, help="启动时测多少帧，0=不测")
     a = ap.parse_args()
 
@@ -444,13 +448,13 @@ def main():
     assert listed, f"{a.base} 下一个模型都没有"
 
     threading.Thread(target=_worker, daemon=True).start()
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
+    srv = ThreadingHTTPServer((a.bind, a.port), Handler)
     srv.args = a
     srv.model_list = [{k: m[k] for k in ("id", "name", "note", "repo")} for m in listed]
     first = a.model or listed[0]["id"]
     print(f"[models] 可用 {[m['id'] for m in listed]}，先载 {first}", flush=True)
     run_on_gpu(lambda: load_model_by_id(first, a), timeout=900)
-    print(f"[serve] http://127.0.0.1:{a.port}  steps={a.steps}", flush=True)
+    print(f"[serve] http://{a.bind}:{a.port}  steps={a.steps}", flush=True)
     srv.serve_forever()
 
 

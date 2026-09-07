@@ -8,6 +8,10 @@
 # 映射到本机同一个端口。页面里那个「推理服务」地址一个字都不用改，
 # 它看到的还是 <本机>:25677，只是背后换成了 A6000。
 #
+# 两侧绑定故意不一样：远端只听 127.0.0.1（这接口没有认证，不该对整个实验室
+# 网络敞开，只有 SSH 隧道进得来就够了）；本机隧道听 0.0.0.0，因为页面是在
+# 陛下的浏览器里跑的，它连的是这台机器的 IP 而不是 127.0.0.1。
+#
 # 落在 1202b 的哪里：/tmp。那台机器 /tmp 是 2TB tmpfs 而它有 4TB 内存，
 # 放 18GB 权重毫无压力；AFS 家目录只有 4.8GB 配额装不下，而 /var/tmp 只剩 23G
 # 且属于系统 /var，写满会伤到机器。代价是重启后要重跑本脚本的 setup。
@@ -39,14 +43,14 @@ mkdir -p $B; cd $B
     env UV_INSTALL_DIR=$B INSTALLER_NO_MODIFY_PATH=1 sh >/dev/null
 $B/uv venv --python 3.12 $B/.venv 2>&1 | tail -1
 # torchvision / datasets / peft 是上游 dataset.py 和 model.py 的间接依赖，
-# 少一个 server.py 就 import 不进来。
+# 少一个 doom_ngen_server.py 就 import 不进来。
 VIRTUAL_ENV=$B/.venv $B/uv pip install --no-cache \
   "numpy<2.0.0" torch torchvision diffusers transformers accelerate \
   safetensors pillow huggingface_hub datasets peft 2>&1 | tail -1
 $B/.venv/bin/python -c "import torch; print('torch', torch.__version__, '| 卡数', torch.cuda.device_count())"
 EOS
   echo "[2/3] 传代码"
-  tar cz gamengen/server.py gamengen/models.json gamengen/upstream \
+  tar cz gamengen/doom_ngen_server.py gamengen/models.json gamengen/upstream \
     | ssh -o BatchMode=yes "$HOST" "mkdir -p $B/app && tar xz -C $B/app"
   echo "[3/3] 下权重（约 18GB）"
   remote <<EOS
@@ -73,11 +77,12 @@ EOS
 start)
   echo "起远端服务（$HOST GPU $GPU）"
   remote <<EOS
-pkill -u \$(whoami) -f "server.py --port $PORT" 2>/dev/null
+pkill -u \$(whoami) -f "doom_ngen_server.py --port $PORT" 2>/dev/null
 sleep 2
 cd $B/app/gamengen
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=$GPU \
-  nohup $B/.venv/bin/python server.py --port $PORT --bench 25 --base $B/weights \
+  nohup $B/.venv/bin/python doom_ngen_server.py --port $PORT \
+        --bind 127.0.0.1 --bench 25 --base $B/weights \
         > $B/server.log 2>&1 &
 echo "  远端 PID \$!"
 EOS
@@ -89,12 +94,12 @@ EOS
   ssh -o BatchMode=yes "$HOST" "grep -E 'bench|serve' $B/server.log | tail -2"
 
   # 本机若有服务占着这个端口，先让位
-  LOCAL=$(ps -u "$(whoami)" -o pid,cmd | grep "[s]erver.py --port $PORT" | awk '{print $1}')
+  LOCAL=$(ps -u "$(whoami)" -o pid,cmd | grep "[d]oom_ngen_server.py --port $PORT" | awk '{print $1}')
   [ -n "$LOCAL" ] && kill "$LOCAL" && echo "  本机推理服务已停，显卡释放"
   pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" 2>/dev/null
   sleep 2
   nohup ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-        -o ServerAliveCountMax=3 -L "127.0.0.1:$PORT:127.0.0.1:$PORT" "$HOST" \
+        -o ServerAliveCountMax=3 -L "0.0.0.0:$PORT:127.0.0.1:$PORT" "$HOST" \
         > outputs/gamengen/tunnel.log 2>&1 &
   echo "  隧道 PID $!"
   sleep 5
@@ -106,7 +111,7 @@ EOS
 stop)
   pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" && echo "隧道已停"
   remote <<EOS
-pkill -u \$(whoami) -f "server.py --port $PORT" && echo "远端服务已停" || echo "远端本来就没跑"
+pkill -u \$(whoami) -f "doom_ngen_server.py --port $PORT" && echo "远端服务已停" || echo "远端本来就没跑"
 EOS
   ;;
 
@@ -116,7 +121,7 @@ status)
     | python3 -c "import json,sys; d=json.load(sys.stdin); print('  端点:', d['gpu'], '| 载入', d['loaded'])" \
     2>/dev/null || echo "  :$PORT 无响应"
   remote <<EOS
-echo "远端进程: \$(pgrep -u \$(whoami) -f 'server.py --port $PORT' >/dev/null && echo 在 || echo 无)"
+echo "远端进程: \$(pgrep -u \$(whoami) -f 'doom_ngen_server.py --port $PORT' >/dev/null && echo 在 || echo 无)"
 nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | sed -n "\$((${GPU}+1))p"
 EOS
   ;;
