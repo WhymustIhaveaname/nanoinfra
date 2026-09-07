@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "可选的 GameNGen 复现权重。路径相对 outputs/gamengen/。",
+    "Google 的官方权重从未公开，这里全是社区复现，作者都自述质量低于原论文。",
+    "unet 目录里要有 unet/ + noise_scheduler/ + action_embedding_model.safetensors + embedding_info.json；",
+    "vae 指向哪个目录就用哪个的 vae/ 子目录。"
+  ],
+  "models": [
+    {
+      "id": "masao",
+      "name": "Masao-Taketani（默认）",
+      "unet": "unet",
+      "vae": "vae",
+      "note": "2025-12。唯一单独发布了微调过的 VAE decoder —— 原论文说画面细节和 HUD 上的数字清不清楚，主要靠这一步。",
+      "repo": "https://huggingface.co/Masao-Taketani/vizdoom-diffusion-dynamic-model"
+    },
+    {
+      "id": "arnaud60k",
+      "name": "arnaudstiegler 60k 步",
+      "unet": "arnaud60k",
+      "vae": "arnaud60k",
+      "note": "2024-12，gameNgen-repro 仓库主训的。没有单独微调的 decoder，用仓库自带的 VAE。",
+      "repo": "https://huggingface.co/arnaudstiegler/sd-model-gameNgen-60ksteps"
+    },
+    {
+      "id": "arnaud20k",
+      "name": "arnaudstiegler 20k 步（欠训对照）",
+      "unet": "arnaud20k",
+      "vae": "arnaud20k",
+      "note": "2024-11，同一作者更早的 baseline。放进来是给 60k 当对照，看多训 3 倍买到了什么。",
+      "repo": "https://huggingface.co/arnaudstiegler/gameNgen-baseline-20ksteps"
+    }
+  ]
+}

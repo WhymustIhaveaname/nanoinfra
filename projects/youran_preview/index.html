@@ -109,7 +109,7 @@
   <h1>nano_world_model — 数据预览 &amp; GameNGen 在线试玩</h1>
   <div class="sub">
 <b>在线试玩</b>是玩一个神经网络生成的 Doom：没有游戏引擎，每一帧都是扩散模型
-    根据过去 64 帧和你按的键画出来的。<b>数据预览</b>是 nano_world_model 的训练数据，
+    根据过去若干帧和你按的键画出来的。三份社区复现权重可以现场切换对比。<b>数据预览</b>是 nano_world_model 的训练数据，
     按来源分四组，每段 17 帧 / 128px 的训练切片并排显示原始与编解码重建。
   </div>
 </header>
@@ -128,12 +128,14 @@
   <section id="game" style="display:none">
     <h2>在线试玩：GameNGen 复现模型<span class="tag" id="g-gpu">…</span></h2>
     <p class="note">
-      这不是 Doom 在跑，是一个扩散模型在<b>假装自己是游戏引擎</b>。它只看得见过去 64 帧
-      画面和 64 个动作，然后画出下一帧——地图、碰撞、血量弹药，全都不存在，是模型
+      这不是 Doom 在跑，是一个扩散模型在<b>假装自己是游戏引擎</b>。它只看得见过去若干帧
+      画面和同样多的动作，然后画出下一帧——地图、碰撞、血量弹药，全都不存在，是模型
       凭记忆猜出来的。走远了场景会漂移、走回头路房间可能变样，那是它的固有行为，不是坏了。
       <br><br>
-      权重来自 <a href="https://github.com/Masao-Taketani/GameNGen" style="color:var(--accent)">Masao-Taketani 的非官方复现</a>，
-      作者自述质量低于原论文。Google 没有公开官方权重。
+      <b>Google 从未公开官方权重</b>，下面三份都是社区复现，作者都自述质量低于原论文。
+      两家的<b>上下文长度还不一样</b>：Masao 用 64 帧，arnaudstiegler 用 9 帧——
+      切换时右边「上下文 N 帧」会跟着变。切模型要重新载入显存（同时只驻留一份），
+      几秒到一分钟不等，切完自动开新局。
     </p>
 
     <div class="gamewrap">
@@ -153,6 +155,12 @@
           </label>
           <span class="mono" id="g-speednote"></span>
         </div>
+        <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <label style="white-space:nowrap">模型</label>
+          <select class="btn" id="g-model" style="flex:1;min-width:220px"></select>
+          <button class="btn" id="g-loadmodel">载入</button>
+        </div>
+        <p class="note" id="g-modelnote" style="margin:6px 0 0;font-size:12px"></p>
         <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
           <label style="white-space:nowrap">推理服务</label>
           <input id="g-api" class="btn" style="flex:1;min-width:200px;font-family:ui-monospace,Menlo,monospace"
@@ -320,6 +328,7 @@ function initGame() {
   });
   addEventListener('keyup', e => G.keys.delete(e.key.toLowerCase()));
   $('g-new').onclick = gameNew;
+  $('g-loadmodel').onclick = loadModel;
   $('g-api').value = GAME_API;
   $('g-apply').onclick = () => {
     GAME_API = $('g-api').value.replace(/\/+$/, '');
@@ -327,6 +336,7 @@ function initGame() {
     G.running = false; G.sid = null;
     probeServer();
   };
+  $('g-model').onchange = showModelNote;
   $('g-speed').onchange = e => {
     G.speed = +e.target.value;
     $('g-speednote').textContent = G.speed === 1 ? '' :
@@ -336,9 +346,48 @@ function initGame() {
   probeServer();
 }
 
+let MODELS = [];
+
+function fillModels(list, loaded) {
+  const sel = document.getElementById('g-model');
+  MODELS = list || [];
+  sel.innerHTML = MODELS.map(m =>
+    `<option value="${m.id}"${m.id === loaded ? ' selected' : ''}>${m.name}</option>`).join('');
+  showModelNote();
+}
+
+function showModelNote() {
+  const id = document.getElementById('g-model').value;
+  const m = MODELS.find(x => x.id === id);
+  document.getElementById('g-modelnote').innerHTML = m
+    ? `${m.note} <a href="${m.repo}" style="color:var(--accent)">权重</a>` : '';
+}
+
+async function loadModel() {
+  const $ = id => document.getElementById(id);
+  const id = $('g-model').value;
+  const btn = $('g-loadmodel');
+  G.running = false; G.sid = null;
+  btn.disabled = true; btn.textContent = '载入中…';
+  $('g-err').textContent = '';
+  $('g-gpu').textContent = '换模型中，约几秒到一分钟（要重跑基准）…';
+  try {
+    const r = await fetch(GAME_API + '/load', {method: 'POST', body: JSON.stringify({id})});
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    probeServer();
+  } catch (e) {
+    $('g-err').innerHTML = `<span class="bad">载入失败：${e.message}</span>`;
+    $('g-gpu').textContent = '载入失败';
+  } finally {
+    btn.disabled = false; btn.textContent = '载入';
+  }
+}
+
 function probeServer() {
   const $ = id => document.getElementById(id);
   fetch(GAME_API + '/info').then(r => r.json()).then(d => {
+    fillModels(d.models, d.loaded);
     $('g-gpu').textContent = `${d.gpu} · ${d.steps} 步去噪 · ${d.res} · 上下文 ${d.buffer} 帧`;
     if (d.bench) {
       $('g-bench').innerHTML =

@@ -120,7 +120,36 @@ def main():
         check("减速有文字说明", "额外等" in note, note)
         pg.select_option("#g-speed", "1")
 
-        print("7) 推理服务地址可切换")
+        print("7) 三个模型可切换")
+        opts = pg.eval_on_selector_all("#g-model option", "els => els.map(e => e.value)")
+        check("模型下拉有三项", len(opts) == 3, str(opts))
+        cur_model = pg.input_value("#g-model")
+        check("当前选中的就是已载入的", cur_model in opts, cur_model)
+        check("有模型说明", len(pg.locator("#g-modelnote").inner_text()) > 10)
+        other = [o for o in opts if o != cur_model][0]
+        pg.select_option("#g-model", other)
+        pg.click("#g-loadmodel")
+        pg.wait_for_selector("#g-loadmodel:not([disabled])", timeout=300000)
+        pg.wait_for_timeout(2500)
+        gpu2 = pg.locator("#g-gpu").inner_text()
+        check(f"切到 {other} 成功", "失败" not in gpu2 and "上下文" in gpu2, gpu2)
+        # 两家的上下文长度不同，切换后这个数字必须跟着变
+        buf = gpu2.split("上下文")[1].strip().split()[0]
+        check("上下文帧数随模型变化", buf in ("9", "64"), f"读到 {buf}")
+        pg.wait_for_timeout(3000)
+        blank2 = pg.evaluate("""() => {
+            const c = document.getElementById('screen');
+            const d = c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+            let s = 0; for (let i=0;i<d.length;i+=4) s += d[i]+d[i+1]+d[i+2];
+            return s === 0; }""")
+        check("换完模型自动开了新局（画面非全黑）", not blank2)
+        pg.select_option("#g-model", cur_model)
+        pg.click("#g-loadmodel")
+        pg.wait_for_selector("#g-loadmodel:not([disabled])", timeout=300000)
+        pg.wait_for_timeout(2000)
+        check("切回原模型", "上下文" in pg.locator("#g-gpu").inner_text())
+
+        print("7b) 推理服务地址可切换")
         cur = pg.input_value("#g-api")
         check("地址框预填了当前服务", cur.endswith(":25677"), cur)
         pg.fill("#g-api", "http://127.0.0.1:25699/")

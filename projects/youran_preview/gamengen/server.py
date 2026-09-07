@@ -4,10 +4,10 @@
 （Linux 上要 root），画面走 OpenCV 窗口，绑死在有显示器的本地机器上。这里改成
 「模型常驻显存 + HTTP 收动作、回 PNG」，浏览器负责输入和显示，服务器不需要图形界面。
 
-模型：Masao-Taketani 的 GameNGen 复现（非官方，作者自述质量低于原论文）
-  unet + action_embedding + noise_scheduler  vizdoom-diffusion-dynamic-model
-  微调过的 VAE decoder                        vizdoom-finetuned-decoder
-上游代码锚点 692b5b32（2026-01-26），推理路径的模块原样放在 upstream/。
+模型：三份社区复现权重，见 models.json；页面上可切换，按需加载（同时只驻留一份，
+16GB 卡上每份约 4GB，留两份就没余量给推理的中间张量了）。Google 的官方权重从未公开。
+推理代码取自 Masao-Taketani 的复现（锚点 692b5b32），原样放在 upstream/；
+arnaudstiegler 的权重文件结构与之相同，所以同一套代码都能加载。
 
 状态：每个 session 持有一个 64 帧的滚动上下文（context_latents）和同长的动作序列。
 走一步 = 用这两者预测下一帧的 latent，解码成像素，然后把新 latent 推进窗口。
@@ -37,16 +37,34 @@ from diffusers.image_processor import VaeImageProcessor            # noqa: E402
 from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution  # noqa: E402
 from PIL import Image                                              # noqa: E402
 
-from config_sd import BUFFER_SIZE, CFG_GUIDANCE_SCALE              # noqa: E402
+import config_sd                                                   # noqa: E402
+import model as upstream_model                                     # noqa: E402
+import run_inference                                               # noqa: E402
+from config_sd import CFG_GUIDANCE_SCALE                           # noqa: E402
 from model import load_model                                       # noqa: E402
 from run_inference import (decode_and_postprocess, next_latent,    # noqa: E402
                            prepare_conditioning_frames)
+
+
+def set_buffer_size(n):
+    """上下文帧数是每个模型自己的事，但上游把它写成了模块级常量 BUFFER_SIZE=64。
+
+    两个复现训的长度不一样——Masao 用 64 帧，arnaudstiegler 用 9 帧（从 unet 的
+    in_channels 反推：4*(n+1)，260 -> 64，40 -> 9）。不改的话换模型必报
+    「expected input to have 40 channels, but got 260」。
+    run_inference 是 `from config_sd import BUFFER_SIZE`，名字已经绑进它自己的
+    命名空间，所以三个模块都要改。同一时刻只有一个模型在显存里，全局改是安全的。
+    """
+    for m in (config_sd, run_inference, upstream_model):
+        m.BUFFER_SIZE = n
 
 # 上游 run_playable_env.select_action 的动作表，12 个
 ACTIONS = ["NOOP", "TL", "TR", "BACK", "TL+BACK", "TR+BACK",
            "MR", "ML", "FWD", "TL+FWD", "TR+FWD", "ATK"]
 
 _STATE = {}                     # sid -> session
+_MODELS = {}                    # id -> 模型清单里的一条
+_CUR = {"id": None, "engine": None, "bench": None, "load_ms": None}
 _IDS = itertools.count(1)       # session id：必须单调，用 len(_STATE) 会重号
 
 # 所有 GPU 计算都排到这一个固定线程上执行。
@@ -93,6 +111,9 @@ class Engine:
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
         torch.backends.cudnn.benchmark = True
+        cfg = json.loads((Path(unet_dir) / "unet" / "config.json").read_text())
+        self.buffer = cfg["in_channels"] // 4 - 1
+        set_buffer_size(self.buffer)
         t0 = time.time()
         out = load_model(str(unet_dir), str(vae_dir), device=self.device)
         self.unet, self.vae, self.action_embedding, self.noise_scheduler = out[:4]
@@ -104,7 +125,7 @@ class Engine:
         self.episode = torch.load(latent_pt, map_location="cpu", weights_only=True)
         self.n_latent = len(self.episode["actions"])
         print(f"[engine] 模型载入 {time.time()-t0:.1f}s, device={self.device}, "
-              f"种子 episode {self.n_latent} 帧", flush=True)
+              f"上下文 {self.buffer} 帧, 种子 episode {self.n_latent} 帧", flush=True)
 
     def _decode(self, latents):
         with torch.inference_mode():
@@ -116,15 +137,15 @@ class Engine:
         """从种子 episode 里随机取 64 帧真实 latent 当开局上下文。"""
         if seed is not None:
             random.seed(seed); torch.manual_seed(seed); np.random.seed(seed)
-        start = random.randint(0, self.n_latent - BUFFER_SIZE - 1)
-        params = self.episode["parameters"][start:start + BUFFER_SIZE]
+        start = random.randint(0, self.n_latent - self.buffer - 1)
+        params = self.episode["parameters"][start:start + self.buffer]
         latents = DiagonalGaussianDistribution(params).sample().to(self.device)
         # 只解最后一帧当开局画面。上游 run_playable_env 把 64 帧一起解，在 16GB 卡上
         # 一次要 5GB 直接 OOM——而那 63 帧解出来根本没人看。
         init = self._decode(latents[-1:] * self.vae.config.scaling_factor)
         ctx = prepare_conditioning_frames(self.vae, latents=latents,
                                           device=self.device, dtype=latents.dtype)
-        acts = self.episode["actions"][start:start + BUFFER_SIZE].to(self.device)
+        acts = self.episode["actions"][start:start + self.buffer].to(self.device)
         s = {"ctx": ctx, "acts": acts, "steps": 0, "png": to_png(init)}
         # 空跑一帧把一次性成本吃掉。实测第一次 next_latent 要 4.9 秒而之后只要 0.3 秒
         # ——cuDNN 在新形状上自动调优 + GPU 升频。不预热的话玩家按下第一个键会卡 5 秒。
@@ -147,7 +168,7 @@ class Engine:
         self.last_shapes = {"ctx": tuple(s["ctx"].shape),
                             "acts": tuple(s["acts"].shape)}
         a = torch.tensor([int(action)], dtype=torch.int64, device=self.device)
-        s["acts"] = torch.cat([s["acts"][-BUFFER_SIZE + 1:], a])
+        s["acts"] = torch.cat([s["acts"][-self.buffer + 1:], a])
         tgt = next_latent(
             unet=self.unet, noise_scheduler=self.noise_scheduler,
             action_embedding=self.action_embedding,
@@ -160,7 +181,7 @@ class Engine:
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         t_unet = time.time()
-        s["ctx"] = torch.cat([s["ctx"][-BUFFER_SIZE + 1:], tgt], dim=0)
+        s["ctx"] = torch.cat([s["ctx"][-self.buffer + 1:], tgt], dim=0)
         s["steps"] += 1
         png = to_png(self._decode(tgt))
         if self.device.type == "cuda":
@@ -212,24 +233,50 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/info"):
-            eng = self.server.engine
+            eng = _CUR["engine"]
+            if eng is None:
+                return self._send({"loaded": None, "models": self.server.model_list,
+                                   "actions": ACTIONS, "buffer": BUFFER_SIZE,
+                                   "res": "320x256"})
             self._send({"actions": ACTIONS, "steps": eng.steps,
                         "device": str(eng.device),
                         "gpu": (torch.cuda.get_device_name(eng.device)
                                 if eng.device.type == "cuda" else "cpu"),
-                        "buffer": BUFFER_SIZE, "res": "320x256",
-                        "bench": self.server.bench})
+                        "buffer": eng.buffer, "res": "320x256",
+                        "bench": _CUR["bench"], "loaded": _CUR["id"],
+                        "load_ms": _CUR["load_ms"],
+                        "models": self.server.model_list})
+        elif self.path.startswith("/models"):
+            self._send({"models": self.server.model_list, "loaded": _CUR["id"]})
         else:
             self._send({"error": "unknown"}, 404)
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", 0))
         req = json.loads(self.rfile.read(n) or b"{}")
-        eng = self.server.engine
-        # 关键：锁只圈住 GPU 计算，_send 一律在锁外。曾经把 _send 放在锁里，
+        # 计算一律排到固定 GPU 线程，_send 在其外。曾经把发送放在 GPU 锁里，
         # 客户端中途断开时 wfile.write 阻塞，锁就再也放不出来——之后每个 /new 和
         # /step 永久挂住，而不碰锁的 /info 照样秒回，症状极具误导性。
         # 锁本身也带超时：宁可返回 503 让前端报错，也不要静默挂死。
+        if self.path.startswith("/load"):
+            mid = str(req.get("id", ""))
+            if mid not in _MODELS:
+                return self._send({"error": f"没有这个模型: {mid}",
+                                   "known": list(_MODELS)}, 400)
+            try:
+                cur = run_on_gpu(lambda: load_model_by_id(mid, self.server.args),
+                                 timeout=900)
+            except Exception as e:
+                return self._send({"error": f"{type(e).__name__}: {e}"}, 500)
+            e2 = cur["engine"]
+            return self._send({"loaded": cur["id"], "load_ms": cur["load_ms"],
+                               "bench": cur["bench"], "steps": e2.steps, "buffer": e2.buffer,
+                               "gpu": (torch.cuda.get_device_name(e2.device)
+                                       if e2.device.type == "cuda" else "cpu")})
+
+        eng = _CUR["engine"]
+        if eng is None:
+            return self._send({"error": "还没载入模型"}, 409)
         if self.path.startswith("/new"):
             try:
                 s = run_on_gpu(lambda: eng.new_session(req.get("seed")))
@@ -256,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/selftest"):
             # 诊断用：在「请求线程」里跑同一段计算，和启动基准（主线程、serve_forever
             # 之前）对比。两者若差很多，问题就在请求上下文而不在模型或 GPU。
-            eng = self.server.engine
+            eng = _CUR["engine"]
             import statistics
             def _run():
                 s2 = eng.new_session(seed=0)
@@ -265,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
             ts = run_on_gpu(_run, timeout=300)
             self._send({"median_ms": round(statistics.median(ts) * 1000, 1),
                         "all_ms": [round(t * 1000, 1) for t in ts],
-                        "startup_bench": self.server.bench})
+                        "startup_bench": _CUR["bench"]})
         else:
             self._send({"error": "unknown"}, 404)
 
@@ -275,6 +322,30 @@ class Handler(BaseHTTPRequestHandler):
 
 def b64(png):
     return "data:image/png;base64," + base64.b64encode(png).decode()
+
+
+def load_model_by_id(mid, args):
+    """换模型：先把旧的从显存里彻底清掉，再载新的。
+
+    不同时驻留多个：16GB 卡上每个约 4GB，留两个就没余量给推理时的中间张量了。
+    换完之后所有旧 session 作废——它们的上下文是用旧 VAE 编出来的，混着用没意义。
+    """
+    m = _MODELS[mid]
+    base = Path(args.base)
+    t0 = time.time()
+    if _CUR["engine"] is not None:
+        _CUR["engine"] = None
+        _STATE.clear()
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    lat = next(iter(sorted((base / "latents").rglob("*.pt"))))
+    eng = Engine(base / m["unet"], base / m["vae"], lat,
+                 args.device, args.steps, args.noise_level)
+    _CUR.update(id=mid, engine=eng, load_ms=round((time.time() - t0) * 1000),
+                bench=benchmark(eng, args.bench) if args.bench else None)
+    return _CUR
 
 
 def benchmark(eng, n=20):
@@ -297,10 +368,11 @@ def benchmark(eng, n=20):
 def main():
     ap = argparse.ArgumentParser()
     base = HERE.parent / "outputs" / "gamengen"
-    ap.add_argument("--unet", default=str(base / "unet"))
-    ap.add_argument("--vae", default=str(base / "vae"))
+    ap.add_argument("--base", default=str(base), help="权重根目录")
+    ap.add_argument("--models", default=str(HERE / "models.json"))
+    ap.add_argument("--model", default=None, help="启动时载哪个（默认清单第一个）")
     ap.add_argument("--latents", default=None,
-                    help="种子 episode 的 .pt；默认取 outputs/gamengen/latents 下第一个")
+                    help="种子 episode 的 .pt；默认取 <base>/latents 下第一个")
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--steps", type=int, default=4, help="每帧去噪步数（论文是 4）")
     ap.add_argument("--noise-level", type=int, default=9)
@@ -308,14 +380,20 @@ def main():
     ap.add_argument("--bench", type=int, default=20, help="启动时测多少帧，0=不测")
     a = ap.parse_args()
 
-    lat = a.latents or next(iter(sorted((base / "latents").rglob("*.pt"))))
-    eng = Engine(Path(a.unet), Path(a.vae), lat, a.device, a.steps, a.noise_level)
+    spec = json.loads(Path(a.models).read_text())
+    listed = [m for m in spec["models"]
+              if (Path(a.base) / m["unet"] / "unet").exists()]
+    for m in listed:
+        _MODELS[m["id"]] = m
+    assert listed, f"{a.base} 下一个模型都没有"
 
     threading.Thread(target=_worker, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", a.port), Handler)
-    srv.engine = eng
-    # 基准也走 GPU 线程，这样它测到的就是实际服务路径的耗时
-    srv.bench = run_on_gpu(lambda: benchmark(eng, a.bench), timeout=600) if a.bench else None
+    srv.args = a
+    srv.model_list = [{k: m[k] for k in ("id", "name", "note", "repo")} for m in listed]
+    first = a.model or listed[0]["id"]
+    print(f"[models] 可用 {[m['id'] for m in listed]}，先载 {first}", flush=True)
+    run_on_gpu(lambda: load_model_by_id(first, a), timeout=900)
     print(f"[serve] http://0.0.0.0:{a.port}  steps={a.steps}", flush=True)
     srv.serve_forever()
 
