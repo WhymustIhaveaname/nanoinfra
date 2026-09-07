@@ -58,9 +58,52 @@ def set_buffer_size(n):
     for m in (config_sd, run_inference, upstream_model):
         m.BUFFER_SIZE = n
 
-# 上游 run_playable_env.select_action 的动作表，12 个
-ACTIONS = ["NOOP", "TL", "TR", "BACK", "TL+BACK", "TR+BACK",
-           "MR", "ML", "FWD", "TL+FWD", "TR+FWD", "ATK"]
+# 两家的动作表不是同一张，而且 id 的语义完全不同。混用会让按键含义整体错位——
+# 曾经拿 Masao 的表去驱动 arnaud 的模型，结果「不动」发出去是「左转」。
+#
+# 所以这里按模型的 embedding 宽度选表，并且客户端只发「按了哪些键」，
+# 由服务端翻成当前模型的 id。加新模型只需在这里加一张表。
+#
+# 按键名（与 VizDoom 的 Button 同名，去掉 MOVE_/TURN_ 前缀）：
+#   ATTACK FWD BACK MLEFT MRIGHT TLEFT TRIGHT
+ACTION_TABLES = {
+    # Masao-Taketani：取自他 run_playable_env.select_action 的按键映射，12 个。
+    # 含 BACK（后退），且 id 0 是 NOOP。
+    12: ["", "TLEFT", "TRIGHT", "BACK", "TLEFT+BACK", "TRIGHT+BACK",
+         "MRIGHT", "MLEFT", "FWD", "TLEFT+FWD", "TRIGHT+FWD", "ATTACK"],
+    # a16z 的 PPO 动作表 v1（arnaudstiegler 两个模型都用这个），18 个。
+    # 没有 BACK，也没有 NOOP——18 个里每一个都是某种移动或开火。
+    18: ["TLEFT", "TRIGHT", "MRIGHT", "MRIGHT+TLEFT", "MRIGHT+TRIGHT",
+         "MLEFT", "MLEFT+TLEFT", "MLEFT+TRIGHT", "FWD", "FWD+TLEFT", "FWD+TRIGHT",
+         "FWD+MRIGHT", "FWD+MRIGHT+TLEFT", "FWD+MRIGHT+TRIGHT",
+         "FWD+MLEFT", "FWD+MLEFT+TLEFT", "FWD+MLEFT+TRIGHT", "ATTACK"],
+}
+
+
+def table_of(eng):
+    n = eng.action_embedding.num_embeddings
+    if n not in ACTION_TABLES:
+        raise KeyError(f"没见过 {n} 个动作的表，需要在 ACTION_TABLES 里补一张")
+    return ACTION_TABLES[n]
+
+
+def resolve_action(eng, buttons):
+    """把按下的键翻成当前模型的动作 id。
+
+    精确匹配优先；匹配不到就退到「被按下的键的最大合法子集」，这样多按一个
+    这个模型表达不出来的键，不会整个动作落空。全都匹配不到则返回 None——
+    调用方据此判断这个模型对这组按键无话可说（比如 a16z 表没有 NOOP）。
+    """
+    want = frozenset(b for b in buttons if b)
+    tbl = [frozenset(x.split("+")) - {""} for x in table_of(eng)]
+    for i, combo in enumerate(tbl):
+        if combo == want:
+            return i
+    best, best_i = -1, None
+    for i, combo in enumerate(tbl):
+        if combo and combo <= want and len(combo) > best:
+            best, best_i = len(combo), i
+    return best_i
 
 _STATE = {}                     # sid -> session
 _MODELS = {}                    # id -> 模型清单里的一条
@@ -156,7 +199,11 @@ class Engine:
         ctx = prepare_conditioning_frames(self.vae, latents=latents,
                                           device=self.device, dtype=latents.dtype)
         acts = self.episode["actions"][start:start + self.buffer].to(self.device)
-        s = {"ctx": ctx, "acts": acts, "steps": 0, "png": to_png(init)}
+        # 记下起点：重放数据集自己的后续动作时要接着往下取。
+        # 上游那两个演示 GIF 就是这么跑的——动作来自 PPO agent 的真实轨迹，
+        # 而不是人乱按。人的按法（对着墙按住前进 20 帧）在训练分布之外。
+        s = {"ctx": ctx, "acts": acts, "steps": 0, "png": to_png(init),
+             "src_at": start + self.buffer}
         # 空跑一帧把一次性成本吃掉。实测第一次 next_latent 要 4.9 秒而之后只要 0.3 秒
         # ——cuDNN 在新形状上自动调优 + GPU 升频。不预热的话玩家按下第一个键会卡 5 秒。
         # next_latent 不改动入参，所以结果丢掉即可，session 状态不受影响。
@@ -172,8 +219,12 @@ class Engine:
             torch.cuda.synchronize()
         return s
 
-    def step(self, s, action):
-        """一个动作 -> 一帧。返回 (png_bytes, 本帧耗时秒)。"""
+    def step(self, s, action, noise=None):
+        """一个动作 -> 一帧。返回 (png_bytes, 本帧耗时秒)。
+
+        noise 传了就覆盖启动时的噪声档（0 最小、9 最大，上游默认 9）。
+        这是条件增强的档位，告诉模型「你的上下文有多脏」，会明显影响漂移速度。
+        """
         t0 = time.time()
         self.last_shapes = {"ctx": tuple(s["ctx"].shape),
                             "acts": tuple(s["acts"].shape)}
@@ -186,7 +237,7 @@ class Engine:
             actions=s["acts"].unsqueeze(0), skip_action_conditioning=False,
             num_inference_steps=self.steps, do_classifier_free_guidance=True,
             guidance_scale=CFG_GUIDANCE_SCALE,
-            discretized_noise_level=self.noise_level,
+            discretized_noise_level=(self.noise_level if noise is None else int(noise)),
         )
         if self.device.type == "cuda":
             torch.cuda.synchronize()
@@ -248,7 +299,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send({"loaded": None, "models": self.server.model_list,
                                    "actions": ACTIONS, "buffer": BUFFER_SIZE,
                                    "res": "320x256"})
-            self._send({"actions": ACTIONS, "steps": eng.steps,
+            self._send({"actions": table_of(eng), "steps": eng.steps,
+                        "has_noop": "" in table_of(eng),
                         "device": str(eng.device),
                         "gpu": (torch.cuda.get_device_name(eng.device)
                                 if eng.device.type == "cuda" else "cpu"),
@@ -304,15 +356,31 @@ class Handler(BaseHTTPRequestHandler):
             s = _STATE.get(str(req.get("id")))
             if s is None:
                 return self._send({"error": "session expired"}, 410)
+            if "buttons" in req:
+                act = resolve_action(eng, req["buttons"])
+                if act is None:
+                    return self._send({"error": "no_action",
+                                       "detail": "这个模型的动作表里没有对应项"}, 422)
+                req["action"] = act
             try:
-                png, dt = run_on_gpu(lambda: eng.step(s, req.get("action", 0)), timeout=90)
+                png, dt = run_on_gpu(
+                    lambda: eng.step(s, req.get("action", 0), req.get("noise")), timeout=90)
             except TimeoutError:
                 return self._send({"error": "busy"}, 503)
             self._send({"frame": b64(png), "steps": s["steps"],
                         "ms": round(dt * 1000, 1),
-                        "action": ACTIONS[int(req.get("action", 0))],
+                        "action": table_of(eng)[int(req.get("action", 0))] or "NOOP",
                         "phases": getattr(eng, "last_phases", None),
                         "shapes": getattr(eng, "last_shapes", None)})
+        elif self.path.startswith("/refaction"):
+            # 这局在种子 episode 里的下一个真实动作。给「重放参考轨迹」用。
+            s = _STATE.get(str(req.get("id")))
+            if s is None:
+                return self._send({"error": "session expired"}, 410)
+            i = s["src_at"] + s["steps"]
+            if i >= eng.n_latent:
+                return self._send({"error": "episode 走完了"}, 410)
+            self._send({"action": int(eng.episode["actions"][i])})
         elif self.path.startswith("/selftest"):
             # 诊断用：在「请求线程」里跑同一段计算，和启动基准（主线程、serve_forever
             # 之前）对比。两者若差很多，问题就在请求上下文而不在模型或 GPU。

@@ -174,9 +174,9 @@
         <div class="keys">
           <span><kbd>鼠标左右</kbd></span><span>转向</span>
           <span><kbd>W</kbd></span><span>前进</span>
-          <span><kbd>S</kbd></span><span>后退</span>
+          <span id="k-back"><kbd>S</kbd></span><span id="k-backtxt">后退</span>
           <span><kbd>A</kbd> <kbd>D</kbd></span><span>左右平移</span>
-          <span><kbd>空格</kbd></span><span>无动作，过一帧</span>
+          <span id="k-noop"><kbd>空格</kbd></span><span id="k-nooptxt">无动作，过一帧</span>
           <span><kbd>鼠标左键</kbd></span><span>开火</span>
           <span><kbd>Esc</kbd></span><span>松开鼠标</span>
         </div>
@@ -214,27 +214,25 @@ const G = {
 
 const TURN_DEADZONE = 6;      // 鼠标累计位移超过这个才算转向，免得手一抖就转
 
-function pickAction() {
+// 只报按下了哪些键。翻成动作 id 是服务端的事——两家模型的表不一样，
+// 前端写死 id 会让按键含义整体错位。
+function pickButtons() {
   let turn = 0;
   if (G.dx >  TURN_DEADZONE) turn =  1;
   if (G.dx < -TURN_DEADZONE) turn = -1;
   G.dx = 0;
   const fwd = G.keys.has('w'), back = G.keys.has('s');
   const left = G.keys.has('a'), right = G.keys.has('d');
-  // 开火独占，和上游动作表一致
-  if (G.fire) { G.fire = false; return 11; }
-  if (G.keys.has(' ') && !fwd && !back && !left && !right && !turn) return 0;  // 空格 = 无动作过一帧
-  if (turn < 0 && fwd)  return 9;
-  if (turn > 0 && fwd)  return 10;
-  if (turn < 0 && back) return 4;
-  if (turn > 0 && back) return 5;
-  if (turn < 0) return 1;
-  if (turn > 0) return 2;
-  if (fwd)  return 8;
-  if (back) return 3;
-  if (left)  return 7;
-  if (right) return 6;
-  return 0;
+  // 开火独占：两家的表里 ATTACK 都是单独一项，不与移动组合
+  if (G.fire) { G.fire = false; return ['ATTACK']; }
+  const b = [];
+  if (fwd)  b.push('FWD');
+  if (back) b.push('BACK');
+  if (left)  b.push('MLEFT');
+  if (right) b.push('MRIGHT');
+  if (turn < 0) b.push('TLEFT');
+  if (turn > 0) b.push('TRIGHT');
+  return b;                      // 空数组 = 什么都没按（空格走这条）
 }
 
 const $ = id => document.getElementById(id);
@@ -274,12 +272,16 @@ async function gameLoop() {
   if (!hasInput()) return;                 // 松手就停在这里
   if (!G.sid) { await gameNew(); if (!G.sid) return; }
   G.stepping = true;
-  const action = pickAction();
+  const buttons = pickButtons();
   const t0 = performance.now();
   try {
     const r = await fetch(GAME_API + '/step', {
-      method: 'POST', body: JSON.stringify({id: G.sid, action})});
+      method: 'POST', body: JSON.stringify({id: G.sid, buttons})});
     if (r.status === 410) { G.sid = null; G.stepping = false; return gameLoop(); }
+    if (r.status === 422) {          // 这个模型的表里没有这组按键（比如 a16z 没有 NOOP）
+      $('g-act').textContent = '该模型无此动作';
+      G.stepping = false; return;
+    }
     const d = await r.json();
     drawFrame(d.frame);
     G.steps = d.steps;
@@ -414,6 +416,17 @@ function probeServer() {
   const $ = id => document.getElementById(id);
   fetch(GAME_API + '/info').then(r => r.json()).then(d => {
     fillModels(d.models, d.loaded);
+    // 按键表随模型变：a16z 那 18 个动作里没有 BACK 也没有 NOOP
+    const acts = d.actions || [];
+    const hasBack = acts.some(a => a.split('+').includes('BACK'));
+    for (const [id, txt, ok] of [['k-back', '后退', hasBack],
+                                 ['k-noop', '无动作，过一帧', d.has_noop]]) {
+      const kbd = document.getElementById(id), lbl = document.getElementById(id + 'txt');
+      if (!kbd) continue;
+      kbd.style.opacity = ok ? '' : '.35';
+      lbl.style.opacity = ok ? '' : '.35';
+      lbl.textContent = ok ? txt : txt + '（该模型没有）';
+    }
     G.loaded = d.loaded;
     G.loadedName = (MODELS.find(m => m.id === d.loaded) || {}).name || d.loaded;
     $('g-gpu').textContent =

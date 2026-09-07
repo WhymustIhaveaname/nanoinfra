@@ -85,7 +85,7 @@ def main():
         steps = int(pg.locator("#g-steps").inner_text())
         check("生成了新帧", steps >= 3, f"steps={steps}")
         act = pg.locator("#g-act").inner_text()
-        check("W + 持续右转 -> TR+FWD", act == "TR+FWD", f"实际 {act}")
+        check("W + 持续右转 -> TRIGHT+FWD", act == "TRIGHT+FWD", f"实际 {act}")
         after = pg.evaluate("() => document.getElementById('screen').toDataURL().length")
         check("canvas 内容变了", before != after)
         fps = pg.locator("#g-fps").inner_text()
@@ -115,21 +115,25 @@ def main():
               and pg.locator("#g-act").inner_text() == "NOOP",
               f"{n1} -> {n2}, 动作 {pg.locator('#g-act').inner_text()}")
 
-        print("5) 动作映射逐一核对")
-        cases = [({}, 0, "NOOP"), ({"w"}, 0, "FWD"), ({"s"}, 0, "BACK"),
-                 ({"a"}, 0, "ML"), ({"d"}, 0, "MR"), (set(), -40, "TL"),
-                 (set(), 40, "TR"), ({"w"}, -40, "TL+FWD"), ({"s"}, 40, "TR+BACK")]
+        print("5) 按键上报逐一核对")
+        cases = [(set(), 0, []), ({"w"}, 0, ["FWD"]), ({"s"}, 0, ["BACK"]),
+                 ({"a"}, 0, ["MLEFT"]), ({"d"}, 0, ["MRIGHT"]),
+                 (set(), -40, ["TLEFT"]), (set(), 40, ["TRIGHT"]),
+                 ({"w"}, -40, ["FWD", "TLEFT"]), ({"s"}, 40, ["BACK", "TRIGHT"])]
         for keys, dx, want in cases:
             got = pg.evaluate("""([keys, dx]) => {
                 G.keys = new Set(keys); G.dx = dx; G.fire = false;
-                const a = pickAction();
-                return ["NOOP","TL","TR","BACK","TL+BACK","TR+BACK",
-                        "MR","ML","FWD","TL+FWD","TR+FWD","ATK"][a];
+                return pickButtons();
             }""", [list(keys), dx])
-            check(f"{sorted(keys) or '无键'} dx={dx:>4} -> {want}", got == want, f"实际 {got}")
+            check(f"{sorted(keys) or '无键'} dx={dx:>4} -> {want or '空'}",
+                  sorted(got) == sorted(want), f"实际 {got}")
         fire = pg.evaluate("""() => { G.keys=new Set(['w']); G.dx=40; G.fire=true;
-            return pickAction(); }""")
-        check("开火独占（压过 W 和转向）", fire == 11, f"实际 {fire}")
+            return pickButtons(); }""")
+        check("开火独占（压过 W 和转向）", fire == ["ATTACK"], f"实际 {fire}")
+        # 动作 id 的翻译交给服务端，按模型的表来——这是「不动发成左转」那个 bug 的修法
+        tbl = pg.evaluate("() => fetch(GAME_API+'/info').then(r=>r.json()).then(d=>[d.actions.length, d.has_noop])")
+        check("服务端报出当前模型的动作表", isinstance(tbl, list) and tbl[0] in (12, 18),
+              f"表长 {tbl}")
 
         print("6) 减速模式")
         for v, want in [("0.5", "0.5"), ("0.25", "0.25")]:
