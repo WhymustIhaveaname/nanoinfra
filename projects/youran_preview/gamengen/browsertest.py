@@ -116,8 +116,6 @@ def main():
             pg.select_option("#g-speed", v)
             got = pg.evaluate("() => G.speed")
             check(f"选 {v} 倍速", str(got) == want, f"G.speed={got}")
-        note = pg.locator("#g-speednote").inner_text()
-        check("减速有文字说明", "额外等" in note, note)
         pg.select_option("#g-speed", "1")
 
         print("7) 三个模型可切换")

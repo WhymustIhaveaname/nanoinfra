@@ -132,12 +132,11 @@
           <button class="btn" id="g-new">↻ 新开一局</button>
           <label>速度
             <select class="btn" id="g-speed">
-              <option value="1">全速（模型能多快就多快）</option>
+              <option value="1">全速</option>
               <option value="0.5">0.5 倍速</option>
               <option value="0.25">0.25 倍速</option>
             </select>
           </label>
-          <span class="mono" id="g-speednote"></span>
         </div>
         <div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
           <label style="white-space:nowrap">模型</label>
@@ -151,7 +150,6 @@
                  placeholder="http://主机:25677">
           <button class="btn" id="g-apply">切换</button>
         </div>
-        <p class="mono" style="margin:8px 0 0">倍速相对全速：0.5 倍即每帧后再等一帧的时间</p>
       </div>
 
       <div class="stats">
@@ -162,14 +160,13 @@
         <div class="row bad" id="g-err"></div>
 
         <div class="keys">
-          <span><kbd>鼠标左右</kbd></span><span>转向（无抬头低头，这个模型没有）</span>
+          <span><kbd>鼠标左右</kbd></span><span>转向</span>
           <span><kbd>W</kbd></span><span>前进</span>
           <span><kbd>S</kbd></span><span>后退</span>
           <span><kbd>A</kbd> <kbd>D</kbd></span><span>左右平移</span>
           <span><kbd>鼠标左键</kbd></span><span>开火</span>
           <span><kbd>Esc</kbd></span><span>松开鼠标</span>
         </div>
-        <p class="mono" style="margin-top:12px">本页发出 12 个动作；开火不能与移动同帧</p>
       </div>
     </div>
   </section>
@@ -311,11 +308,7 @@ function initGame() {
     probeServer();
   };
   $('g-model').onchange = showModelNote;
-  $('g-speed').onchange = e => {
-    G.speed = +e.target.value;
-    $('g-speednote').textContent = G.speed === 1 ? '' :
-      `每帧之后额外等 ${(1 / G.speed - 1).toFixed(0)} 帧的时间`;
-  };
+  $('g-speed').onchange = e => { G.speed = +e.target.value; };
 
   probeServer();
 }
