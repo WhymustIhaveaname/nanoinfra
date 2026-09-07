@@ -444,13 +444,13 @@ def main():
     assert listed, f"{a.base} 下一个模型都没有"
 
     threading.Thread(target=_worker, daemon=True).start()
-    srv = ThreadingHTTPServer(("0.0.0.0", a.port), Handler)
+    srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     srv.args = a
     srv.model_list = [{k: m[k] for k in ("id", "name", "note", "repo")} for m in listed]
     first = a.model or listed[0]["id"]
     print(f"[models] 可用 {[m['id'] for m in listed]}，先载 {first}", flush=True)
     run_on_gpu(lambda: load_model_by_id(first, a), timeout=900)
-    print(f"[serve] http://0.0.0.0:{a.port}  steps={a.steps}", flush=True)
+    print(f"[serve] http://127.0.0.1:{a.port}  steps={a.steps}", flush=True)
     srv.serve_forever()
 
 

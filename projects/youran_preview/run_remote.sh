@@ -94,7 +94,7 @@ EOS
   pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" 2>/dev/null
   sleep 2
   nohup ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-        -o ServerAliveCountMax=3 -L "0.0.0.0:$PORT:127.0.0.1:$PORT" "$HOST" \
+        -o ServerAliveCountMax=3 -L "127.0.0.1:$PORT:127.0.0.1:$PORT" "$HOST" \
         > outputs/gamengen/tunnel.log 2>&1 &
   echo "  隧道 PID $!"
   sleep 5
