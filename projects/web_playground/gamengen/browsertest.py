@@ -172,6 +172,9 @@ def main():
         pg.select_option("#g-model", cur0)
         pg.wait_for_timeout(400)
         check("选回来后提示消失", pg.locator("#g-stale").inner_text().strip() == "")
+        check("选中的就是在跑的时，载入按钮禁用", pg.is_disabled("#g-loadmodel"))
+        check("按钮显示「已载入」", pg.locator("#g-loadmodel").inner_text() == "已载入",
+              pg.locator("#g-loadmodel").inner_text())
         check("确认框恢复正常态", "stale" not in (pg.get_attribute("#g-running","class") or ""))
 
         print("6c) 按下模型不支持的键要有提示")
@@ -220,13 +223,15 @@ def main():
         check("权重链接指向 huggingface", "huggingface.co" in links[1][1], links[1][1])
         other = [o for o in opts if o != cur_model][0]
         pg.select_option("#g-model", other)
+        pg.wait_for_timeout(300)
+        check("选了别的模型后按钮才可点", not pg.is_disabled("#g-loadmodel"))
         pg.click("#g-loadmodel")
         pg.wait_for_timeout(1800)
         check("载入时进度条可见", pg.locator("#g-progwrap").is_visible())
         ptext = pg.locator("#g-progtext").inner_text()
         check("进度条有阶段和秒数", ("预热" in ptext or "测速" in ptext
               or "载入" in ptext or "腾显存" in ptext or "准备" in ptext) and "s" in ptext, ptext)
-        pg.wait_for_selector("#g-loadmodel:not([disabled])", timeout=300000)
+        pg.wait_for_function("() => document.getElementById('g-loadmodel').textContent !== '载入中…'", timeout=300000)
         pg.wait_for_timeout(2500)
         gpu2 = pg.locator("#g-gpu").inner_text()
         check(f"切到 {other} 成功", "失败" not in gpu2 and "上下文" in gpu2, gpu2)
@@ -246,7 +251,7 @@ def main():
         t_switch = _t.time()
         pg.select_option("#g-model", cur_model)
         pg.click("#g-loadmodel")
-        pg.wait_for_selector("#g-loadmodel:not([disabled])", timeout=300000)
+        pg.wait_for_function("() => document.getElementById('g-loadmodel').textContent !== '载入中…'", timeout=300000)
         pg.wait_for_timeout(2000)
         check("切回原模型", "上下文" in pg.locator("#g-gpu").inner_text())
         # 基准结果落盘缓存了，第二次载入不该再测速——15 秒是宽松上界（实测 2-3 秒）

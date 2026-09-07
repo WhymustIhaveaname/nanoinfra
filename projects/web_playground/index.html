@@ -471,8 +471,13 @@ function syncModelState() {
   const sel = document.getElementById('g-model');
   G.stale = !!G.loaded && sel.value !== G.loaded;
   const btn = document.getElementById('g-loadmodel');
+  // 选中的就是正在跑的，没什么可载的——禁掉按钮，别让人白等一遍。
+  btn.disabled = !G.stale;
+  btn.textContent = G.stale ? '载入' : '已载入';
   btn.style.borderColor = G.stale ? 'var(--warn)' : '';
   btn.style.color = G.stale ? 'var(--warn)' : '';
+  btn.style.opacity = G.stale ? '' : '.5';
+  btn.style.cursor = G.stale ? '' : 'default';
   document.getElementById('g-stale').textContent =
     G.stale ? '↑ 选了别的模型，点「载入」后才能玩' : '';
   const run = document.getElementById('g-running');
@@ -539,6 +544,7 @@ function notSupported(what) {
     setTimeout(() => { $('g-progwrap').style.display = 'none';
                        $('g-progfill').style.width = '0%'; }, 600);
     btn.disabled = false; btn.textContent = '载入';
+    syncModelState();            // 让按钮状态回到「已载入/待载入」的正确一侧
   }
 }
 
