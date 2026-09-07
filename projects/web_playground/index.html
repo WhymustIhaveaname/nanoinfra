@@ -209,9 +209,12 @@ const G = {
   sid: null, locked: false, stepping: false, speed: 1, steps: 0,
   keys: new Set(), dx: 0, fire: false, times: [],
   loaded: null,      // 显存里真正装着的模型 id
+  hasNoop: false,    // 当前模型有没有「不动」这个动作
+  heldButtons: null, repeatLeft: 0,   // 当前这组按键还要再发几帧
   stale: false,      // 下拉框选的和 loaded 不一致 —— 此时禁止游玩
 };
 
+const REPEAT = 4;            // 一次按键连发几帧，对齐训练数据的 4 帧一组
 const TURN_DEADZONE = 6;      // 鼠标累计位移超过这个才算转向，免得手一抖就转
 
 // 只报按下了哪些键。翻成动作 id 是服务端的事——两家模型的表不一样，
@@ -263,7 +266,10 @@ async function gameNew() {
 // 所以「一直循环」等于「你不动它也自己漂」（实测连发 30 次 NOOP，第 30 帧与第 0 帧
 // 平均差 11.66/255，墙的贴图都换了）。改成输入驱动之后，松手 = 状态定格。
 function hasInput() {
-  for (const k of ['w', 'a', 's', 'd', ' ']) if (G.keys.has(k)) return true;
+  // 注意别把空格算进来又不产出按钮：那样在没有 NOOP 的模型上会不停发请求、
+  // 不停被 422 拒绝，白烧 GPU。空格只在模型确实有「不动」这个动作时才算输入。
+  for (const k of ['w', 'a', 's', 'd']) if (G.keys.has(k)) return true;
+  if (G.keys.has(' ') && G.hasNoop) return true;
   return G.fire || Math.abs(G.dx) > TURN_DEADZONE;
 }
 
@@ -275,7 +281,16 @@ async function gameLoop() {
   // 两局的帧交替画在同一块画布上，帧率减半。
   G.stepping = true;
   if (!G.sid) { await gameNew(); if (!G.sid) { G.stepping = false; return; } }
-  const buttons = pickButtons();
+  // 训练数据里按键是连着 4 帧不变的（采数据的 PPO 每 4 帧才改一次按键，
+  // 实测 1106 段里 972 段恰好长 4）。所以这里也把一次按键连发 REPEAT 帧，
+  // 中途不重读输入——既贴合模型见过的样子，也让动作记录填满得快 4 倍。
+  if (G.repeatLeft > 0 && G.heldButtons) {
+    G.repeatLeft--;
+  } else {
+    G.heldButtons = pickButtons();
+    G.repeatLeft = REPEAT - 1;
+  }
+  const buttons = G.heldButtons;
   const t0 = performance.now();
   try {
     const r = await fetch(GAME_API + '/step', {
@@ -293,6 +308,10 @@ async function gameLoop() {
       G.stepping = false; return;
     }
     const d = await r.json();
+    // 松手的瞬间往往已有一帧在服务端算着了。它回来时手早松了，画出来就是
+    // 「松手后画面又动了一下」。所以这里再查一次：手已经松了就丢掉这一帧。
+    // 判据必须是「还有没有输入」，不能只看鼠标锁——松的通常是键，不是锁。
+    if (!hasInput()) { G.stepping = false; return; }
     drawFrame(d.frame);
     G.steps = d.steps;
     const wall = performance.now() - t0;
@@ -336,7 +355,8 @@ function initGame() {
       gameLoop();
     }
   });
-  addEventListener('keyup', e => G.keys.delete(e.key.toLowerCase()));
+  addEventListener('keyup', e => { G.keys.delete(e.key.toLowerCase());
+    if (!hasInput()) { G.repeatLeft = 0; G.heldButtons = null; } });
   $('g-new').onclick = gameNew;
   $('g-loadmodel').onclick = loadModel;
   $('g-model').onchange = () => { showModelNote(); syncModelState(); };
@@ -438,6 +458,7 @@ function probeServer() {
       lbl.style.opacity = ok ? '' : '.35';
       lbl.textContent = ok ? txt : txt + '（该模型没有）';
     }
+    G.hasNoop = !!d.has_noop;
     G.loaded = d.loaded;
     G.loadedName = (MODELS.find(m => m.id === d.loaded) || {}).name || d.loaded;
     $('g-gpu').textContent =

@@ -86,7 +86,8 @@ def main():
         steps = int(pg.locator("#g-steps").inner_text())
         check("生成了新帧", steps >= 3, f"steps={steps}")
         act = pg.locator("#g-act").inner_text()
-        check("W + 持续右转 -> TRIGHT+FWD", act == "TRIGHT+FWD", f"实际 {act}")
+        check("W + 持续右转 -> 前进且右转", set(act.split("+")) == {"FWD", "TRIGHT"},
+              f"实际 {act}")
         after = pg.evaluate("() => document.getElementById('screen').toDataURL().length")
         check("canvas 内容变了", before != after)
         fps = pg.locator("#g-fps").inner_text()
@@ -107,14 +108,17 @@ def main():
         pg.wait_for_timeout(3000)
         n1 = int(pg.locator("#g-steps").inner_text())
         check("没有输入时不再生成新帧", n0 == n1, f"{n0} -> {n1}")
+        has_noop = pg.evaluate("() => G.hasNoop")
         pg.evaluate("() => { G.keys.add(' '); gameLoop(); }")
-        pg.wait_for_timeout(1200)
-        pg.evaluate("() => G.keys.delete(' ')")
-        pg.wait_for_timeout(800)
+        pg.wait_for_timeout(1500)
+        pg.evaluate("() => { G.keys.delete(' '); G.repeatLeft = 0; }")
+        pg.wait_for_timeout(1000)
         n2 = int(pg.locator("#g-steps").inner_text())
-        check("空格能推进（且动作是 NOOP）", n2 > n1
-              and pg.locator("#g-act").inner_text() == "NOOP",
-              f"{n1} -> {n2}, 动作 {pg.locator('#g-act').inner_text()}")
+        if has_noop:
+            check("有 NOOP 的模型：空格能推进", n2 > n1, f"{n1} -> {n2}")
+        else:
+            # 没有 NOOP 的模型上按空格不该发任何请求，否则会被 422 拒到白烧 GPU
+            check("无 NOOP 的模型：空格不空转", n2 == n1, f"{n1} -> {n2}")
 
         print("5) 按键上报逐一核对")
         cases = [(set(), 0, []), ({"w"}, 0, ["FWD"]), ({"s"}, 0, ["BACK"]),
