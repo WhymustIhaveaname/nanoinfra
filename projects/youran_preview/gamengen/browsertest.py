@@ -39,9 +39,15 @@ def main():
         check("无 JS 报错", not errs, str(errs[:2]) if errs else "")
 
         tabs = pg.locator("#tabs button")
-        n = tabs.count()
-        check("标签数 = 5（试玩 + 4 个数据源）", n == 5, f"实际 {n}")
-        check("第一个标签是试玩", "试玩" in tabs.nth(0).inner_text())
+        subs = pg.locator("#subtabs button")
+        check("一级标签 = 2（试玩 / 数据预览）", tabs.count() == 2, f"实际 {tabs.count()}")
+        check("二级标签 = 4（四个数据源）", subs.count() == 4, f"实际 {subs.count()}")
+        check("一级第一个是试玩", "试玩" in tabs.nth(0).inner_text())
+        check("一级第二个是数据预览", "数据预览" in tabs.nth(1).inner_text())
+        check("下载那组已改名", "GameNGen" in subs.nth(0).inner_text(),
+              subs.nth(0).inner_text())
+        check("试玩页不显示二级标签",
+              "hide" in (pg.get_attribute("#subtabs", "class") or ""))
 
         print("2) 推理后端连上了吗")
         gpu = pg.locator("#g-gpu").inner_text()
@@ -133,8 +139,13 @@ def main():
 
         print("8) 切到数据标签")
         pg.evaluate("() => { G.running = false; }")
-        tabs.nth(2).click()
+        tabs.nth(1).click()                      # 一级：数据预览
+        pg.wait_for_timeout(800)
+        check("数据页显示二级标签",
+              "hide" not in (pg.get_attribute("#subtabs", "class") or ""))
+        subs.nth(2).click()                      # 二级：bots_long
         pg.wait_for_timeout(1200)
+        check("二级选中态正确", "on" in (subs.nth(2).get_attribute("class") or ""))
         check("逐帧控件在数据页显示",
               pg.locator("#controls").is_visible())
         check("有训练切片图", pg.locator("#main .film").count() > 0,
@@ -143,10 +154,16 @@ def main():
               f"{pg.locator('#main video').count()} 个")
         pg.screenshot(path=f"{a.shots}/browser_2_data.png", full_page=False)
 
-        print("9) 切回试玩")
+        print("9) 切回试玩，再切回数据")
         tabs.nth(0).click()
         pg.wait_for_timeout(600)
         check("逐帧控件在试玩页隐藏", not pg.locator("#controls").is_visible())
+        check("试玩页二级标签隐藏",
+              "hide" in (pg.get_attribute("#subtabs", "class") or ""))
+        tabs.nth(1).click()
+        pg.wait_for_timeout(800)
+        check("回到数据页记得上次看的是 bots_long",
+              "on" in (subs.nth(2).get_attribute("class") or ""))
 
         # 第 7 步故意指向死端口，浏览器必然记一条连接失败——那是测试自己造的，
         # 不是页面的问题，所以从最终判定里剔掉。

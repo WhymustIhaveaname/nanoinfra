@@ -161,7 +161,7 @@ def main():
     if pq_files:
         clips = parquet_clips_head(pq_files[0], n_clips)
         if clips:
-            groups.append(("downloaded", "PPO（下载）",
+            groups.append(("downloaded", "下载（GameNGen 复现）",
                            f"a16z 公开语料 {pq_files[0].name}，别人训好的 PPO 智能体录的；"
                            "10 帧滑窗展开成连续 run 后切 17 帧", clips))
 

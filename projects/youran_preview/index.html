@@ -19,14 +19,26 @@
   .sub { color: var(--dim); font-size: 13px; max-width: 940px; }
   .sub code { background: #1e222b; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
 
-  #tabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 28px 14px;
-          border-bottom: 1px solid var(--line); }
-  #tabs button { background: var(--panel); color: var(--dim); border: 1px solid var(--line);
-                 padding: 7px 14px; border-radius: 999px; cursor: pointer; font-size: 13px; }
-  #tabs button:hover { color: var(--fg); border-color: var(--accent); }
-  #tabs button.on { background: var(--accent); color: #0f1115;
-                    border-color: var(--accent); font-weight: 600; }
-  #tabs .sep { width: 1px; background: var(--line); margin: 4px 6px; }
+  /* 两级标签：上面是「在线试玩 / 数据预览」，下面才是数据的四个来源。
+     这两者不是并列关系，平铺成一排会让人以为 bots 和试玩是同一层的东西。 */
+  #tabs { display: flex; gap: 10px; flex-wrap: wrap; padding: 0 28px 12px; }
+  #tabs button { background: transparent; color: var(--dim); border: none;
+                 border-bottom: 2px solid transparent; padding: 8px 4px;
+                 cursor: pointer; font-size: 15px; font-weight: 600; }
+  #tabs button:hover { color: var(--fg); }
+  #tabs button.on { color: var(--fg); border-bottom-color: var(--accent); }
+
+  #subtabs { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 28px 14px;
+             border-bottom: 1px solid var(--line); }
+  #subtabs.hide { display: none; }
+  #subtabs button { background: var(--panel); color: var(--dim); border: 1px solid var(--line);
+                    padding: 6px 13px; border-radius: 999px; cursor: pointer; font-size: 13px; }
+  #subtabs button:hover { color: var(--fg); border-color: var(--accent); }
+  #subtabs button.on { background: var(--accent); color: #0f1115;
+                       border-color: var(--accent); font-weight: 600; }
+  #subtabs .sep { width: 1px; background: var(--line); margin: 4px 6px; }
+  /* 试玩那一页没有二级标签，但顶部仍要有分隔线 */
+  #tabs.solo { border-bottom: 1px solid var(--line); padding-bottom: 12px; }
 
   #controls { position: sticky; top: 0; z-index: 10; display: flex; align-items: center;
               gap: 18px; flex-wrap: wrap; padding: 12px 28px;
@@ -96,13 +108,14 @@
 <header>
   <h1>nano_world_model — 数据预览 &amp; GameNGen 在线试玩</h1>
   <div class="sub">
-    左边第一个标签是<b>玩神经网络生成的 Doom</b>：没有游戏引擎，每一帧都是扩散模型
-    根据过去 64 帧和你按的键画出来的。后面四个标签是 nano_world_model 的<b>训练数据预览</b>，
-    每段 17 帧 / 128px 的训练切片并排显示原始与编解码重建。
+<b>在线试玩</b>是玩一个神经网络生成的 Doom：没有游戏引擎，每一帧都是扩散模型
+    根据过去 64 帧和你按的键画出来的。<b>数据预览</b>是 nano_world_model 的训练数据，
+    按来源分四组，每段 17 帧 / 128px 的训练切片并排显示原始与编解码重建。
   </div>
 </header>
 
 <div id="tabs"></div>
+<div id="subtabs"></div>
 
 <div id="controls">
   <button id="play">⏸ 暂停</button>
@@ -181,7 +194,7 @@
 <script>
 const RES = 128, SCALE = 2;
 let T = 17, frame = 0, playing = true, fps = 8, last = 0;
-let sections = [], active = 0;
+let sections = [], active = 0, lastData = 1;   // lastData: 数据预览里上次看的来源
 
 function panel(cap, src) {
   const d = document.createElement('div');
@@ -347,24 +360,29 @@ Promise.all([
   const main = document.getElementById('main');
   const tabs = document.getElementById('tabs');
 
-  // 第一个标签：试玩（内容是页面里写死的那段 HTML）
-  const gbtn = document.createElement('button');
-  gbtn.textContent = '🎮 在线试玩';
-  gbtn.onclick = () => show(0);
-  tabs.appendChild(gbtn);
-  const gsep = document.createElement('div'); gsep.className = 'sep'; tabs.appendChild(gsep);
-  sections.push({sec: $('game'), btn: gbtn, films: [], actEls: [], isGame: true});
+  const subtabs = document.getElementById('subtabs');
 
+  // 一级：试玩 / 数据预览
+  const playBtn = document.createElement('button');
+  playBtn.textContent = '🎮 在线试玩';
+  playBtn.onclick = () => show(0);
+  const dataBtn = document.createElement('button');
+  dataBtn.textContent = '📊 数据预览';
+  dataBtn.onclick = () => show(lastData);   // 回到上次看的那个来源
+  tabs.append(playBtn, dataBtn);
+  sections.push({sec: $('game'), btn: playBtn, films: [], actEls: [], isGame: true});
+
+  // 二级：数据的四个来源
   groups.forEach((g, gi) => {
     if (gi === 1) {
-      const sep = document.createElement('div'); sep.className = 'sep'; tabs.appendChild(sep);
+      const sep = document.createElement('div'); sep.className = 'sep'; subtabs.appendChild(sep);
     }
     const btn = document.createElement('button');
     btn.textContent = g.title.replace(/^(下载|本地录制)：/, '');
     btn.title = g.id;
     const myIndex = sections.length;
     btn.onclick = () => show(myIndex);
-    tabs.appendChild(btn);
+    subtabs.appendChild(btn);
 
     const sec = document.createElement('section');
     sec.style.display = 'none';
@@ -458,15 +476,20 @@ Promise.all([
   }
 
   function show(i) {
+    const isGame = sections[i].isGame;
     sections.forEach((s, j) => {
       s.sec.style.display = (i === j) ? '' : 'none';
-      s.btn.className = (i === j) ? 'on' : '';
+      if (j > 0) s.btn.className = (i === j) ? 'on' : '';   // 二级按钮
     });
+    playBtn.className = isGame ? 'on' : '';
+    dataBtn.className = isGame ? '' : 'on';
+    subtabs.className = isGame ? 'hide' : '';
+    tabs.className = isGame ? 'solo' : '';
+    if (!isGame) lastData = i;
     active = i;
     // 逐帧播放那排控件对试玩没意义
-    document.getElementById('controls').style.display =
-      sections[i].isGame ? 'none' : 'flex';
-    if (!sections[i].isGame) draw();
+    document.getElementById('controls').style.display = isGame ? 'none' : 'flex';
+    if (!isGame) draw();
     window.scrollTo({ top: 0 });
   }
 
