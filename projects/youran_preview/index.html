@@ -126,7 +126,7 @@
       <div class="gamecol">
         <div class="rel">
           <canvas id="screen" width="320" height="256"></canvas>
-          <div id="overlay">点击画面开始 · 鼠标左右转向 · Esc 退出</div>
+          <div id="overlay">点击画面开始 · 按键才生成，松手定格 · Esc 退出</div>
         </div>
         <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
           <button class="btn" id="g-new">↻ 新开一局</button>
@@ -164,6 +164,7 @@
           <span><kbd>W</kbd></span><span>前进</span>
           <span><kbd>S</kbd></span><span>后退</span>
           <span><kbd>A</kbd> <kbd>D</kbd></span><span>左右平移</span>
+          <span><kbd>空格</kbd></span><span>无动作，走一帧</span>
           <span><kbd>鼠标左键</kbd></span><span>开火</span>
           <span><kbd>Esc</kbd></span><span>松开鼠标</span>
         </div>
@@ -194,13 +195,13 @@ function panel(cap, src) {
 let GAME_API = localStorage.getItem('gamengen_api')
             || `http://${location.hostname}:25677`;
 const G = {
-  sid: null, running: false, speed: 1, steps: 0,
+  sid: null, locked: false, stepping: false, speed: 1, steps: 0,
   keys: new Set(), dx: 0, fire: false, times: [],
 };
 
+const TURN_DEADZONE = 6;      // 鼠标累计位移超过这个才算转向，免得手一抖就转
+
 function pickAction() {
-  // 鼠标累计位移决定转向，超过阈值才算，免得手一抖就转
-  const TURN_DEADZONE = 6;
   let turn = 0;
   if (G.dx >  TURN_DEADZONE) turn =  1;
   if (G.dx < -TURN_DEADZONE) turn = -1;
@@ -209,6 +210,7 @@ function pickAction() {
   const left = G.keys.has('a'), right = G.keys.has('d');
   // 开火独占，和上游动作表一致
   if (G.fire) { G.fire = false; return 11; }
+  if (G.keys.has(' ') && !fwd && !back && !left && !right && !turn) return 0;  // 空格 = 无动作走一帧
   if (turn < 0 && fwd)  return 9;
   if (turn > 0 && fwd)  return 10;
   if (turn < 0 && back) return 4;
@@ -245,15 +247,26 @@ async function gameNew() {
   }
 }
 
+// 有没有待处理的输入。没有就一帧都不生成——世界冻住。
+// 这一条是整个交互的关键：模型是随机的，同样的上下文喂 NOOP 也会画出不同的下一帧，
+// 所以「一直循环」等于「你不动它也自己漂」（实测连发 30 次 NOOP，第 30 帧与第 0 帧
+// 平均差 11.66/255，墙的贴图都换了）。改成输入驱动之后，松手 = 状态定格。
+function hasInput() {
+  for (const k of ['w', 'a', 's', 'd', ' ']) if (G.keys.has(k)) return true;
+  return G.fire || Math.abs(G.dx) > TURN_DEADZONE;
+}
+
 async function gameLoop() {
-  if (!G.running) return;
-  if (!G.sid) { await gameNew(); if (!G.sid) { G.running = false; return; } }
+  if (!G.locked || G.stepping) return;
+  if (!hasInput()) return;                 // 松手就停在这里
+  if (!G.sid) { await gameNew(); if (!G.sid) return; }
+  G.stepping = true;
   const action = pickAction();
   const t0 = performance.now();
   try {
     const r = await fetch(GAME_API + '/step', {
       method: 'POST', body: JSON.stringify({id: G.sid, action})});
-    if (r.status === 410) { G.sid = null; return setTimeout(gameLoop, 0); }
+    if (r.status === 410) { G.sid = null; G.stepping = false; return gameLoop(); }
     const d = await r.json();
     drawFrame(d.frame);
     G.steps = d.steps;
@@ -266,12 +279,12 @@ async function gameLoop() {
     $('g-steps').textContent = d.steps;
     $('g-act').textContent = d.action;
     $('g-fps').textContent = (1000 / mean * G.speed).toFixed(2) + ' fps';
-    // 减速：全速之外额外等待，让画面推进速度按比例变慢
-    const extra = (1 / G.speed - 1) * wall;
-    setTimeout(gameLoop, Math.max(0, extra));
+    G.stepping = false;
+    // 键还按着就接着走（连按/按住 = 连续生成），速度档在这里拉开间隔
+    setTimeout(gameLoop, Math.max(0, (1 / G.speed - 1) * wall));
   } catch (e) {
     $('g-err').innerHTML = '<span class="bad">推理请求失败，已停。</span>';
-    G.running = false;
+    G.stepping = false;
   }
 }
 
@@ -282,19 +295,19 @@ function initGame() {
     const locked = document.pointerLockElement === cv;
     cv.classList.toggle('locked', locked);
     $('overlay').style.display = locked ? 'none' : 'flex';
-    G.running = locked;
-    if (locked) gameLoop();
+    G.locked = locked;
   });
   document.addEventListener('mousemove', e => {
-    if (document.pointerLockElement === cv) G.dx += e.movementX;
+    if (document.pointerLockElement === cv) { G.dx += e.movementX; gameLoop(); }
   });
   document.addEventListener('mousedown', e => {
-    if (document.pointerLockElement === cv && e.button === 0) G.fire = true;
+    if (document.pointerLockElement === cv && e.button === 0) { G.fire = true; gameLoop(); }
   });
   addEventListener('keydown', e => {
     if (document.pointerLockElement === cv) {
       G.keys.add(e.key.toLowerCase());
       if (['w','a','s','d',' '].includes(e.key.toLowerCase())) e.preventDefault();
+      gameLoop();
     }
   });
   addEventListener('keyup', e => G.keys.delete(e.key.toLowerCase()));
@@ -304,7 +317,7 @@ function initGame() {
   $('g-apply').onclick = () => {
     GAME_API = $('g-api').value.replace(/\/+$/, '');
     localStorage.setItem('gamengen_api', GAME_API);
-    G.running = false; G.sid = null;
+    G.sid = null;
     probeServer();
   };
   $('g-model').onchange = showModelNote;
@@ -334,7 +347,7 @@ async function loadModel() {
   const $ = id => document.getElementById(id);
   const id = $('g-model').value;
   const btn = $('g-loadmodel');
-  G.running = false; G.sid = null;
+  G.sid = null;
   btn.disabled = true; btn.textContent = '载入中…';
   $('g-err').textContent = '';
   $('g-gpu').textContent = '换模型中，约几秒到一分钟（要重跑基准）…';

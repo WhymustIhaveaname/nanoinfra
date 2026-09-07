@@ -71,11 +71,11 @@ def main():
         # 不依赖 Pointer Lock：直接喂状态并驱动同一个循环。
         # dx 必须持续补——鼠标位移是一次性增量，pickAction 取走就清零（这是对的），
         # 真人持续移动鼠标才会不断产生 movementX，这里用定时器模拟。
-        pg.evaluate("""() => {
-            G.keys.add('w');
-            window.__dxFeed = setInterval(() => { G.dx += 20; }, 30);
-            G.running = true; gameLoop();
-        }""")
+        pg.evaluate('''() => {
+            G.locked = true; G.keys.add('w');
+            window.__dxFeed = setInterval(() => { G.dx += 20; gameLoop(); }, 30);
+            gameLoop();
+        }''')
         pg.wait_for_timeout(6000)
         steps = int(pg.locator("#g-steps").inner_text())
         check("生成了新帧", steps >= 3, f"steps={steps}")
@@ -94,6 +94,21 @@ def main():
         check("前端开销不超过推理本身", cli_ms - srv_ms < srv_ms,
               f"开销 {cli_ms - srv_ms:.0f} ms")
         pg.evaluate("() => { clearInterval(window.__dxFeed); G.keys.clear(); }")
+
+        print("4b) 松手就定格 / 空格走一帧")
+        pg.wait_for_timeout(1500)
+        n0 = int(pg.locator("#g-steps").inner_text())
+        pg.wait_for_timeout(3000)
+        n1 = int(pg.locator("#g-steps").inner_text())
+        check("没有输入时不再生成新帧", n0 == n1, f"{n0} -> {n1}")
+        pg.evaluate("() => { G.keys.add(' '); gameLoop(); }")
+        pg.wait_for_timeout(1200)
+        pg.evaluate("() => G.keys.delete(' ')")
+        pg.wait_for_timeout(800)
+        n2 = int(pg.locator("#g-steps").inner_text())
+        check("空格能推进（且动作是 NOOP）", n2 > n1
+              and pg.locator("#g-act").inner_text() == "NOOP",
+              f"{n1} -> {n2}, 动作 {pg.locator('#g-act').inner_text()}")
 
         print("5) 动作映射逐一核对")
         cases = [({}, 0, "NOOP"), ({"w"}, 0, "FWD"), ({"s"}, 0, "BACK"),
@@ -165,7 +180,6 @@ def main():
               pg.locator("#g-gpu").inner_text())
 
         print("8) 切到数据标签")
-        pg.evaluate("() => { G.running = false; }")
         tabs.nth(1).click()                      # 一级：数据预览
         pg.wait_for_timeout(800)
         check("数据页显示二级标签",
