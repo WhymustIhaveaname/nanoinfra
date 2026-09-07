@@ -84,7 +84,7 @@ def main():
         after = pg.evaluate("() => document.getElementById('screen').toDataURL().length")
         check("canvas 内容变了", before != after)
         fps = pg.locator("#g-fps").inner_text()
-        check("显示了 fps 和真实速度倍率", "fps" in fps and "真实速度" in fps, fps)
+        check("显示了 fps", "fps" in fps, fps)
 
         # 客户端墙钟 vs 服务端自报耗时：差值就是传输 + PNG 解码 + canvas 绘制的开销
         srv_ms = float(pg.locator("#g-ms").inner_text())

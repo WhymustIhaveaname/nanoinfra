@@ -31,14 +31,12 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 # 录制分层：tag -> (中文名, 一句话说明)。这四个（含下载的 PPO）才是对等的对象。
 RECORDED = [
     ("bots",      "bots",
-     "8 个电脑玩家打死斗，每集 4000 帧（约 114 秒）。世界自己会动，提供 dynamics。"),
+     "同场 8 个 bot，每集 4000 帧（114 秒）。实测未开 deathmatch，双方零伤害。"),
     ("bots_long", "bots_long",
-     "和 bots 同一个世界、同一个策略，唯一区别是每集 21000 帧（约 10 分钟）——"
-     "为切 129 帧长窗口留余地。"),
+     "同 bots，每集 21000 帧（600 秒）。"),
     ("pans",      "pans",
-     "原意是「摇镜头」：该在静态世界里把「按键→画面」教干净。但配方写死 "
-     "world_bots_frac: 1.0，静态世界那条路在 run_episode 里会抛异常，"
-     "所以这一层实际退化成了和 bots 完全一样。"),
+     "配方写死 world_bots_frac: 1.0，静态世界那条路会 raise，"
+     "所以这一层实际等同 bots。"),
 ]
 
 
@@ -162,8 +160,8 @@ def main():
         clips = parquet_clips_head(pq_files[0], n_clips)
         if clips:
             groups.append(("downloaded", "下载（GameNGen 复现）",
-                           f"a16z 公开语料 {pq_files[0].name}，别人训好的 PPO 智能体录的；"
-                           "10 帧滑窗展开成连续 run 后切 17 帧", clips))
+                           f"a16z 公开语料 {pq_files[0].name}，"
+                           "P-H-B-D 的 PPO agent 录的。", clips))
 
     # 2) 本地录制的各变体
     for tag, title, note in RECORDED:

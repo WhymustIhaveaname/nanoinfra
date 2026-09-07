@@ -107,11 +107,6 @@
 <body>
 <header>
   <h1>nano_world_model — 数据预览 &amp; GameNGen 在线试玩</h1>
-  <div class="sub">
-<b>在线试玩</b>是玩一个神经网络生成的 Doom：没有游戏引擎，每一帧都是扩散模型
-    根据过去若干帧和你按的键画出来的。三份社区复现权重可以现场切换对比。<b>数据预览</b>是 nano_world_model 的训练数据，
-    按来源分四组，每段 17 帧 / 128px 的训练切片并排显示原始与编解码重建。
-  </div>
 </header>
 
 <div id="tabs"></div>
@@ -127,17 +122,6 @@
 <main id="main">
   <section id="game" style="display:none">
     <h2>在线试玩：GameNGen 复现模型<span class="tag" id="g-gpu">…</span></h2>
-    <p class="note">
-      这不是 Doom 在跑，是一个扩散模型在<b>假装自己是游戏引擎</b>。它只看得见过去若干帧
-      画面和同样多的动作，然后画出下一帧——地图、碰撞、血量弹药，全都不存在，是模型
-      凭记忆猜出来的。走远了场景会漂移、走回头路房间可能变样，那是它的固有行为，不是坏了。
-      <br><br>
-      <b>Google 从未公开官方权重</b>，下面三份都是社区复现，作者都自述质量低于原论文。
-      两家的<b>上下文长度还不一样</b>：Masao 用 64 帧，arnaudstiegler 用 9 帧——
-      切换时右边「上下文 N 帧」会跟着变。切模型要重新载入显存（同时只驻留一份），
-      几秒到一分钟不等，切完自动开新局。
-    </p>
-
     <div class="gamewrap">
       <div class="gamecol">
         <div class="rel">
@@ -167,12 +151,7 @@
                  placeholder="http://主机:25677">
           <button class="btn" id="g-apply">切换</button>
         </div>
-        <p class="note" style="margin-top:8px;font-size:12px">
-          倍速是相对<b>全速</b>而言：0.5 倍就是每生成一帧之后再多等一帧的时间。
-          原始数据是 35 tic/秒抽 4 帧存一帧，也就是模型的「真实游戏速度」应为
-          <b>8.75 fps</b>；这块卡上全速只有 3.3 fps，所以全速本身已经约等于
-          0.38 倍真实速度。慢下来反而更好控——每帧都是完整算出来的，不掉帧。
-        </p>
+        <p class="mono" style="margin:8px 0 0">倍速相对全速：0.5 倍即每帧后再等一帧的时间</p>
       </div>
 
       <div class="stats">
@@ -190,10 +169,7 @@
           <span><kbd>鼠标左键</kbd></span><span>开火</span>
           <span><kbd>Esc</kbd></span><span>松开鼠标</span>
         </div>
-        <p class="note" style="margin-top:14px;font-size:12px">
-          模型的动作表共 12 个，转向和前进/后退可以组合（<code>TL+FWD</code> 等），
-          但<b>开火不能和移动同帧</b>——和 nanoinfra 那套 19 动作表是同一个限制。
-        </p>
+        <p class="mono" style="margin-top:12px">本页发出 12 个动作；开火不能与移动同帧</p>
       </div>
     </div>
   </section>
@@ -292,9 +268,7 @@ async function gameLoop() {
     $('g-ms').textContent = d.ms.toFixed(0);
     $('g-steps').textContent = d.steps;
     $('g-act').textContent = d.action;
-    const eff = 1000 / mean * G.speed;
-    $('g-fps').innerHTML = eff.toFixed(2) + ' fps'
-      + `<span style="font-size:13px;color:var(--dim)"> = ${(eff / 8.75).toFixed(2)}× 真实速度</span>`;
+    $('g-fps').textContent = (1000 / mean * G.speed).toFixed(2) + ' fps';
     // 减速：全速之外额外等待，让画面推进速度按比例变慢
     const extra = (1 / G.speed - 1) * wall;
     setTimeout(gameLoop, Math.max(0, extra));
@@ -444,9 +418,8 @@ Promise.all([
     if (v) {
       vbox.innerHTML = `
         <h3>录像本身</h3>
-        <p class="note">整集 <b>${v.episode_frames}</b> 帧（${v.episode_seconds} 秒），
-           这里只放开头 <b>${v.seconds}</b> 秒（怕占网速）。开头约两秒的白雾是 9 个角色
-           挤在同一个出生点造成的。</p>
+        <p class="note">整集 <b>${v.episode_frames}</b> 帧 / ${v.episode_seconds} 秒，
+           这里放开头 <b>${v.seconds}</b> 秒。开头两秒的白雾是 9 个角色挤在同一出生点。</p>
         <div class="clip">
           <div class="panel"><div class="cap">录制器存下的原生画面 ${v.raw_res}</div>
             <video src="${v.raw}" controls loop muted playsinline
@@ -458,10 +431,8 @@ Promise.all([
     } else {
       vbox.innerHTML = `
         <h3>录像本身</h3>
-        <p class="note">这份语料<b>没有连续录像可放</b>。它存的是 10 帧滑窗且被抽样过
-           （窗与窗相隔 1、3、5、9… 步），展开回帧之后不是一条连续的带子，而是每集约 150 段
-           碎片，中位长度 25 帧、最长约 60 帧。所以它切得出 17 帧的训练片，切不出 129 帧的，
-           下载再多也一样。</p>`;
+        <p class="note">无连续录像。存的是抽样过的 10 帧滑窗，展开后 shard_0 实测
+           <b>152</b> 段碎片，中位 <b>23</b> 帧、最长 <b>59</b> 帧；≥17 帧的 99 段，≥129 帧的 <b>0</b> 段。</p>`;
     }
     sec.appendChild(vbox);
 
@@ -469,8 +440,7 @@ Promise.all([
     h.textContent = '训练切片：原始 vs 编解码重建';
     const hn = document.createElement('p');
     hn.className = 'note';
-    hn.textContent = '模型一次吃 17 帧（0.49 秒），下面每段就是一个这样的切片。'
-                   + '这是训练单位的长度，不是录像的长度。';
+    hn.textContent = '一段 = 17 帧 = 0.49 秒，模型一次吃这么多。';
     sec.append(h, hn);
 
     const films = [], actEls = [];
@@ -497,7 +467,7 @@ Promise.all([
       if (c.uniq_codes / c.n_codes < 0.5) {
         const hint = document.createElement('div');
         hint.className = 'hint';
-        hint.textContent = '↑ 不重复的码不到一半：画面几乎不动，编码器一直在复用同一批码。';
+        hint.textContent = '↑ 不重复的码不到一半（其余片段都在 1200 上下）';
         meta.appendChild(hint);
       }
       row.append(p1, p2, meta);
