@@ -133,8 +133,9 @@ cd gamengen
 .venv/bin/python playtest.py      # scripted play, makes an MP4
 ```
 
-`browsertest.py` opens the page and makes about 100 checks.
-It checks the button map, the model switch, the load progress, and the tab layout.
+`browsertest.py` opens the page and makes about 60 checks in eight sections:
+page structure, backend, button-to-action, model switch, record and replay,
+fault handling, layout, and the data tab.
 
 The page has one input path: a click on an action button. The keyboard and the
 mouse-turn control are removed. A click sends four frames of the same action.

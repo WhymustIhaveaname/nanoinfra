@@ -242,11 +242,12 @@ const G = {
   pool: [],          // 常驻在显存里的模型 —— 在池子里的切换是瞬时的
   hasNoop: false, hasBack: false,   // 当前模型支持哪些动作
   heldButtons: null, repeatLeft: 0,   // 当前这组动作还要再发几帧
-  padButtons: [], padShots: 0,        // 排队的点击：还要被读几次（每次 = REPEAT 帧）
+  padQueue: [],      // 排队的点击，每项是一组按钮名；每项出 REPEAT 帧
   // 本局回放：每帧存下画面和当时的动作。上限 600 帧（约 2 分钟），
   // 超了就丢最老的——一帧 PNG 约 100KB，不设上限会把浏览器内存吃光。
   rec: [], recMax: 600, dropped: 0,   // dropped: 因超上限被丢掉的帧数
   scrubbing: false, replaying: false, timer: null,
+  newing: null, newClearRec: false, newGen: 0,   // 飞行中的开局：promise、是否清录制、代次
   stale: true,       // 下拉框选的和 loaded 不一致 —— 此时禁止游玩。
                      // 初值必须是 true：还没问到服务端装的是哪个模型之前不许玩
 };
@@ -327,7 +328,7 @@ function stopReplay() {
 // 报的是按钮名，翻成动作 id 是服务端的事——两家模型的表不一样，
 // 前端写死 id 会让动作含义整体错位。空数组 = 「不动」。
 function pickButtons() {
-  if (G.padShots > 0) { G.padShots--; return G.padButtons; }
+  if (G.padQueue.length) return G.padQueue.shift();
   return [];
 }
 
@@ -352,21 +353,44 @@ function drawFrame(dataUrl) {
 // 不传的话 resetInput() 会把「触发这一轮循环的那次点击」一起清掉，
 // 于是 session 失效后的第一次点击被静默吃掉（实测点左转出 0 帧）。
 async function gameNew(keepRec, keepInput) {
-  $('g-err').textContent = '';
-  try {
-    const r = await api(GAME_API + '/new', {method: 'POST', body: JSON.stringify({})});
-    const d = await r.json();
-    G.sid = d.id; G.steps = 0; G.times = [];
-    if (!keepRec) { G.rec = []; G.dropped = 0; }   // 重连不该抹掉玩家的录制
-    if (!keepInput) resetInput();
-    stopReplay(); updateRecUI();
-    drawFrame(d.frame);
-    $('g-steps').textContent = '0';
-    $('g-fps').textContent = '— fps';
-  } catch (e) {
-    $('g-err').innerHTML = `<span class="bad">连不上推理服务 ${GAME_API}。`
-      + `请确认 gamengen/doom_ngen_server.py 在跑。</span>`;
+  // 同一时刻只开一局。gameLoop 发现没 session 会来补开，probeServer 换完模型也会开，
+  // 两边撞上就是两个 /new、两个 session，后到的把先到的覆盖。
+  // 撞上飞行中的那一局就合并，绝不串到它后面。串行会出这种事：
+  // 排在后面的 gameNew 落地时，把这期间点出来的帧和排队的点击一起抹掉
+  // ——实测「连点两下新开一局再点前进」，前 8 帧凭空消失。
+  if (G.newing) {
+    if (!keepRec) G.newClearRec = true;     // 有人要求清录制，就让飞行中那局去清
+    return G.newing;
   }
+  G.newClearRec = !keepRec;
+  const gen = ++G.newGen;   // 代次号：只有最新这一局的落地才准动录制和画面
+  // 旧局立刻作废。不作废的话，/new 还没回来时点的那几帧会发到旧 session 上，
+  // 然后被下面那句 G.rec = [] 抹掉——「点了新开一局马上点前进，前几帧丢了」。
+  G.sid = null;
+  if (!keepInput) resetInput();
+  stopReplay();
+  $('g-err').textContent = '';
+  G.newing = (async () => {
+    try {
+      const r = await api(GAME_API + '/new', {method: 'POST', body: JSON.stringify({})});
+      const d = await r.json();
+      // 已经被更新的一局取代了就什么都别做。否则旧局落地会把新局刚记下的帧抹掉
+      // ——实测连点三次「新开一局」再点开火，4 帧只剩 2 帧。
+      if (gen !== G.newGen) return;
+      G.sid = d.id; G.steps = 0; G.times = [];
+      if (G.newClearRec) { G.rec = []; G.dropped = 0; }   // 重连不该抹掉玩家的录制
+      updateRecUI();
+      drawFrame(d.frame);
+      $('g-steps').textContent = '0';
+      $('g-fps').textContent = '— fps';
+    } catch (e) {
+      $('g-err').innerHTML = `<span class="bad">连不上推理服务 ${GAME_API}。`
+        + `请确认 gamengen/doom_ngen_server.py 在跑。</span>`;
+    } finally {
+      if (gen === G.newGen) G.newing = null;
+    }
+  })();
+  return G.newing;
 }
 
 // 有没有待处理的输入。没有就一帧都不生成——世界冻住。
@@ -374,17 +398,17 @@ async function gameNew(keepRec, keepInput) {
 // 喂「不动」也会画出不同的下一帧，所以「一直循环」等于「你不点它也自己漂」
 // （实测连发 30 次 NOOP，第 30 帧与第 0 帧平均差 11.66/255，墙的贴图都换了）。
 function hasInput() {
-  // repeatLeft 必须算进来。不算的话，一次点击走完第 1 帧后 padShots 已清空，
+  // repeatLeft 必须算进来。不算的话，一次点击走完第 1 帧后队列已空，
   // 循环就此停住，剩下 3 帧「上膛」留在 heldButtons 里，等下一次点击时先把
   // 上一个动作打完——实测点「左转」发出去的是「前进 前进 前进 左转」。
   if (G.repeatLeft > 0 && G.heldButtons) return true;
-  return G.padShots > 0;
+  return G.padQueue.length > 0;
 }
 
 // 输入状态只有这一个清空口。以前散落在各个分支里，
 // 漏一处就会把上一次的动作带进下一次（或让世界自己一直走）。
 function resetInput() {
-  G.padShots = 0; G.padButtons = [];
+  G.padQueue = [];
   G.repeatLeft = 0; G.heldButtons = null;
   clearTimeout(G.timer); G.timer = null;      // 排着的下一轮也得撤，否则还会再走一帧
 }
@@ -492,10 +516,9 @@ function initGame() {
       // 点完就丢掉焦点：按钮保留焦点的话，之后敲空格或回车会把它再激活一次，
       // 等于键盘又能玩了 —— 而键盘是明确要去掉的。
       b.blur();
-      G.padButtons = b.dataset.act ? [b.dataset.act] : [];
-      // 1 而不是 REPEAT：padShots 是「还要被 pickButtons 读几次」，
-      // 而每读一次本身就会重复 REPEAT 帧。设成 REPEAT 会变成 4×4=16 帧。
-      G.padShots = 1;
+      // 队列而不是单槽：单槽时，前一次点击还没被 pickButtons 取走
+      // （比如正在等 /new 回来）就会被后一次覆盖，前一次凭空消失。
+      G.padQueue.push(b.dataset.act ? [b.dataset.act] : []);
       kick();
     };
   }
