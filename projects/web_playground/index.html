@@ -245,7 +245,7 @@ const G = {
   loaded: null,      // 显存里真正装着的模型 id
   hasNoop: false, hasBack: false,   // 当前模型支持哪些动作
   heldButtons: null, repeatLeft: 0,   // 当前这组按键还要再发几帧
-  padButtons: [], padShots: 0,        // 操作按钮排队中的动作
+  padButtons: [], padShots: 0,        // 操作按钮：还要被读几次（每次 = REPEAT 帧）
   // 本局回放：每帧存下画面和当时的动作。上限 600 帧（约 2 分钟），
   // 超了就丢最老的——一帧 PNG 约 100KB，不设上限会把浏览器内存吃光。
   rec: [], recMax: 600,
@@ -476,7 +476,9 @@ function initGame() {
       const act = b.dataset.act;
       if (!G.locked) { G.locked = true; }      // 用按钮玩不需要锁鼠标
       G.padButtons = act ? [act] : [];
-      G.padShots = REPEAT;
+      // 1 而不是 REPEAT：padShots 是「还要被 pickButtons 读几次」，
+      // 而每读一次本身就会重复 REPEAT 帧。设成 REPEAT 会变成 4×4=16 帧。
+      G.padShots = 1;
       gameLoop();
     };
   }

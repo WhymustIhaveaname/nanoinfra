@@ -209,6 +209,20 @@ def main():
         pg.wait_for_timeout(200)
         check("能停止回放", not pg.evaluate("() => G.replaying"))
 
+        print("6e) 点一次操作按钮只走 REPEAT 帧")
+        pg.evaluate("() => { G.keys.clear(); G.repeatLeft = 0; G.heldButtons = null; }")
+        pg.wait_for_timeout(600)
+        pg.click('.padbtn[data-act="FWD"]')      # 先点一次，让 session 建好
+        pg.wait_for_timeout(2500)
+        before = pg.evaluate("() => G.rec.length")
+        pg.click('.padbtn[data-act="FWD"]')
+        pg.wait_for_timeout(2500)
+        got = pg.evaluate("() => G.rec.length") - before
+        rep = pg.evaluate("() => REPEAT")
+        # 曾经把 padShots 设成 REPEAT，而每次读按钮本身又重复 REPEAT 帧，
+        # 于是一次点击蹦 REPEAT*REPEAT=16 帧。
+        check(f"一次点击 = {rep} 帧", got == rep, f"实际 {got} 帧")
+
         print("7) 三个模型可切换")
         opts = pg.eval_on_selector_all("#g-model option", "els => els.map(e => e.value)")
         MODEL_NAMES.update(dict(zip(opts, pg.eval_on_selector_all(
