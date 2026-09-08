@@ -79,7 +79,7 @@ def main():
         # 真人持续移动鼠标才会不断产生 movementX，这里用定时器模拟。
         pg.evaluate('''() => {
             G.locked = true; G.keys.add('w');
-            window.__dxFeed = setInterval(() => { G.dx += 20; gameLoop(); }, 30);
+            window.__dxFeed = setInterval(() => { G.dx += 20; G.dxAt = performance.now(); gameLoop(); }, 30);
             gameLoop();
         }''')
         pg.wait_for_timeout(6000)
@@ -120,6 +120,13 @@ def main():
             # 没有 NOOP 的模型上按空格不该发任何请求，否则会被 422 拒到白烧 GPU
             check("无 NOOP 的模型：空格不空转", n2 == n1, f"{n1} -> {n2}")
 
+        print("4c) 鼠标停下就不再转")
+        pg.evaluate("() => { resetInput(); G.dx = 99; G.dxAt = performance.now(); }")
+        check("刚动过鼠标 -> 算作在转", pg.evaluate("() => hasInput()"))
+        pg.wait_for_timeout(400)
+        check("停手 400ms 后 -> 不再算作在转", not pg.evaluate("() => hasInput()"))
+        pg.evaluate("() => resetInput()")
+
         print("5) 按键上报逐一核对")
         cases = [(set(), 0, []), ({"w"}, 0, ["FWD"]), ({"s"}, 0, ["BACK"]),
                  ({"a"}, 0, ["MLEFT"]), ({"d"}, 0, ["MRIGHT"]),
@@ -127,12 +134,12 @@ def main():
                  ({"w"}, -40, ["FWD", "TLEFT"]), ({"s"}, 40, ["BACK", "TRIGHT"])]
         for keys, dx, want in cases:
             got = pg.evaluate("""([keys, dx]) => {
-                G.keys = new Set(keys); G.dx = dx; G.fire = false;
+                G.keys = new Set(keys); G.dx = dx; G.dxAt = performance.now(); G.fire = false;
                 return pickButtons();
             }""", [list(keys), dx])
             check(f"{sorted(keys) or '无键'} dx={dx:>4} -> {want or '空'}",
                   sorted(got) == sorted(want), f"实际 {got}")
-        fire = pg.evaluate("""() => { G.keys=new Set(['w']); G.dx=40; G.fire=true;
+        fire = pg.evaluate("""() => { G.keys=new Set(['w']); G.dx=40; G.dxAt=performance.now(); G.fire=true;
             return pickButtons(); }""")
         check("开火独占（压过 W 和转向）", fire == ["ATTACK"], f"实际 {fire}")
         # 动作 id 的翻译交给服务端，按模型的表来——这是「不动发成左转」那个 bug 的修法
@@ -209,19 +216,53 @@ def main():
         pg.wait_for_timeout(200)
         check("能停止回放", not pg.evaluate("() => G.replaying"))
 
-        print("6e) 点一次操作按钮只走 REPEAT 帧")
-        pg.evaluate("() => { G.keys.clear(); G.repeatLeft = 0; G.heldButtons = null; }")
+        print("6e) 点一次操作按钮 = REPEAT 帧，且这 REPEAT 帧都是刚点的那个动作")
+        pg.evaluate("() => resetInput()")
         pg.wait_for_timeout(600)
-        pg.click('.padbtn[data-act="FWD"]')      # 先点一次，让 session 建好
-        pg.wait_for_timeout(2500)
-        before = pg.evaluate("() => G.rec.length")
-        pg.click('.padbtn[data-act="FWD"]')
-        pg.wait_for_timeout(2500)
-        got = pg.evaluate("() => G.rec.length") - before
         rep = pg.evaluate("() => REPEAT")
-        # 曾经把 padShots 设成 REPEAT，而每次读按钮本身又重复 REPEAT 帧，
-        # 于是一次点击蹦 REPEAT*REPEAT=16 帧。
-        check(f"一次点击 = {rep} 帧", got == rep, f"实际 {got} 帧")
+        # 这条以前只数帧数，不看动作，所以在「点左转却发出 FWD,FWD,FWD,TLEFT」时
+        # 照样通过——帧数对、动作全错。必须断言发出去的动作本身。
+        for act in ("FWD", "TLEFT", "ATTACK", "MRIGHT"):
+            before = pg.evaluate("() => G.rec.length")
+            pg.click(f'.padbtn[data-act="{act}"]')
+            pg.wait_for_timeout(3000)
+            sent = pg.evaluate(f"() => G.rec.slice({before}).map(r => r.action)")
+            check(f"点「{act}」发出 {rep} 帧且全是它", len(sent) == rep and set(sent) == {act},
+                  f"实际 {sent}")
+        check("点完不留残留", pg.evaluate("() => G.repeatLeft") == 0)
+
+        print("6f) 回放期间不吃输入，结束后不倒灌")
+        pg.evaluate("() => { startReplay(); G.keys.add('w'); G.dx = 99; G.dxAt = performance.now(); G.fire = true; }")
+        pg.wait_for_timeout(300)
+        n0 = pg.evaluate("() => G.rec.length")
+        pg.wait_for_timeout(1200)
+        check("回放中不追加新帧", pg.evaluate("() => G.rec.length") == n0)
+        pg.evaluate("() => stopReplay()")
+        pg.wait_for_timeout(300)
+        check("回放结束后输入已清空", not pg.evaluate("() => hasInput()"))
+
+        print("6g) 失焦/切后台不留卡住的按键")
+        pg.evaluate("() => { G.keys.add('w'); G.keys.add('a'); G.dx = 50; G.dxAt = performance.now(); G.fire = true; }")
+        pg.evaluate("() => window.dispatchEvent(new Event('blur'))")
+        check("失焦后按键全释放", not pg.evaluate("() => hasInput()"))
+
+        print("6h) 错误提示会自己消失，不会永久挂着")
+        pg.evaluate("() => showErr('测试')")
+        check("提示能出现", "测试" in pg.locator("#g-err").inner_text())
+        pg.evaluate("() => clearErr()")
+        check("提示能清除", pg.locator("#g-err").inner_text().strip() == "")
+
+        print("6i) 窄屏不横向溢出")
+        for w in (1000, 760, 560):
+            pg.set_viewport_size({"width": w, "height": 900})
+            pg.wait_for_timeout(350)
+            sw = pg.evaluate("() => document.documentElement.scrollWidth")
+            check(f"视口 {w}px 无横向滚动条", sw <= w + 2, f"内容宽 {sw}")
+        pg.set_viewport_size({"width": 1500, "height": 1000})
+        pg.wait_for_timeout(300)
+
+        print("6j) 请求都带超时，不会永久挂死")
+        check("有 AbortController 超时封装", pg.evaluate("() => typeof api === 'function'"))
 
         print("7) 三个模型可切换")
         opts = pg.eval_on_selector_all("#g-model option", "els => els.map(e => e.value)")

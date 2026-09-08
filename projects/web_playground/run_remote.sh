@@ -77,6 +77,11 @@ EOS
   ;;
 
 start)
+  # 每次 start 都推一遍代码。以前只有 setup 推，改完服务端跑 start 起来的还是旧代码，
+  # 而且日志和 /info 全都正常，看不出来——这种静默的版本错位最难查。
+  echo "推代码"
+  tar cz gamengen/doom_ngen_server.py gamengen/models.json gamengen/upstream \
+    | ssh -o BatchMode=yes "$HOST" "mkdir -p $B/app && tar xz -C $B/app"
   echo "起远端服务（$HOST GPU $GPU）"
   remote <<EOS
 pkill -u \$(whoami) -f "doom_ngen_server.py --port $PORT" 2>/dev/null
