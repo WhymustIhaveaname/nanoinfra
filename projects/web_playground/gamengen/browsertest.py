@@ -86,12 +86,11 @@ def main():
         pg.wait_for_timeout(2500)
         check("重新问到之后恢复可玩", not pg.evaluate("() => G.stale"))
 
-        print("3c) 没有键盘之后画面上不该有「点击画面开始」")
-        disp = lambda: pg.evaluate(
-            "() => getComputedStyle(document.getElementById('overlay')).display")
-        check("刚打开画面上没有遮罩", disp() == "none", disp())
-        check("遮罩文字里没有「点击画面开始」",
-              "点击画面" not in pg.locator("#overlay").inner_text())
+        print("3c) 键盘和「点击画面开始」都已去掉，模型也不用手动载入")
+        check("画面上没有遮罩元素",
+              pg.evaluate("() => document.getElementById('overlay') === null"))
+        check("没有载入/切换按钮",
+              pg.evaluate("() => document.getElementById('g-loadmodel') === null"))
 
         print("4) 点操作按钮出帧")
         # 输入只有一条路：点按钮。键盘和鼠标转向已从页面整个移除。
@@ -168,36 +167,38 @@ def main():
         check("页面上没有速度选择器",
               pg.evaluate("() => document.getElementById('g-speed') === null"))
 
-        print("6b) 选了模型不载入就不能玩")
+        print("6b) 下拉框选了就自动切，切换途中不许出帧")
         MODEL_NAMES.update(dict(zip(
             pg.eval_on_selector_all("#g-model option", "e=>e.map(x=>x.value)"),
             pg.eval_on_selector_all("#g-model option", "e=>e.map(x=>x.textContent)"))))
         cur0 = pg.input_value("#g-model")
         other0 = [o for o in pg.eval_on_selector_all("#g-model option", "e=>e.map(x=>x.value)")
                   if o != cur0][0]
-        pg.select_option("#g-model", other0)
-        pg.wait_for_timeout(400)
-        stale_txt = pg.locator("#g-stale").inner_text()
-        check("有醒目提示", "载入" in stale_txt or "切换" in stale_txt, stale_txt)
-        check("确认框仍写着实际在跑的那个",
-              pg.locator("#g-runname").inner_text() == MODEL_NAMES[cur0],
-              f"确认框={pg.locator('#g-runname').inner_text()} 期望={MODEL_NAMES[cur0]}")
-        check("确认框变成告警态", "stale" in (pg.get_attribute("#g-running","class") or ""))
-        check("选了别的模型时遮罩盖住画面", disp() == "flex", disp())
+        # 界面和显存不一致的那段窗口里，一帧都不许发——否则会出现
+        # 「界面写着 A、实际在跑 B」，玩家据此得出的结论全是错的。
+        st = pg.evaluate("""(other) => {
+            const sel = document.getElementById('g-model');
+            sel.value = other; syncModelState();
+            return {stale: G.stale,
+                    dis: document.querySelector('.padbtn[data-act="FWD"]').disabled,
+                    txt: document.getElementById('g-running').textContent};
+        }""", other0)
+        check("切换途中 stale 置位", st["stale"], str(st))
+        check("切换途中动作按钮置灰", st["dis"], str(st))
+        check("切换途中读数写「切换中」", "切换中" in st["txt"], st["txt"])
         before_n = int(pg.locator("#g-steps").inner_text())
         pg.click('.padbtn[data-act="FWD"]', force=True)
-        pg.wait_for_timeout(2500)
-        check("不一致时点按钮不生成任何帧",
+        pg.wait_for_timeout(2000)
+        check("切换途中点按钮不生成任何帧",
               int(pg.locator("#g-steps").inner_text()) == before_n,
               f"{before_n} -> {pg.locator('#g-steps').inner_text()}")
-        pg.select_option("#g-model", cur0)
-        pg.wait_for_timeout(400)
-        check("选回来后提示消失", pg.locator("#g-stale").inner_text().strip() == "")
-        check("选中的就是在跑的时，载入按钮禁用", pg.is_disabled("#g-loadmodel"))
-        check("按钮显示「已载入」", pg.locator("#g-loadmodel").inner_text() == "已载入",
-              pg.locator("#g-loadmodel").inner_text())
-        check("确认框恢复正常态", "stale" not in (pg.get_attribute("#g-running","class") or ""))
-        check("选回来后遮罩消失", disp() == "none", disp())
+        pg.evaluate("() => { document.getElementById('g-model').value = arguments0; }"
+                    .replace("arguments0", repr(cur0)))
+        pg.evaluate("() => syncModelState()")
+        check("退回真正在跑的那个之后恢复可玩", not pg.evaluate("() => G.stale"))
+        check("读数恢复「当前正在玩」",
+              "当前正在玩" in pg.locator("#g-running").inner_text(),
+              pg.locator("#g-running").inner_text())
 
         print("6c) 模型缺哪些动作要写清楚，按钮要置灰")
         missing = pg.locator("#g-missing").inner_text()
@@ -365,21 +366,23 @@ def main():
         check("代码链接指向 github", "github.com" in links[0][1], links[0][1])
         check("权重链接指向 huggingface", "huggingface.co" in links[1][1], links[1][1])
         other = [o for o in opts if o != cur_model][0]
-        pg.select_option("#g-model", other)
-        pg.wait_for_timeout(300)
-        check("选了别的模型后按钮才可点", not pg.is_disabled("#g-loadmodel"))
-        check("已常驻的模型按钮写「切换」而不是「载入」",
-              pg.locator("#g-loadmodel").inner_text() == "切换",
-              pg.locator("#g-loadmodel").inner_text())
         import time as _t
-        t_first = _t.time()
-        pg.click("#g-loadmodel")
-        # 三个模型常驻之后，换模型只是改一个指针（实测 50–93ms），
-        # 进度条一闪而过，抓不到是正常的，不能再当成必现条件。
-        pg.wait_for_function("() => document.getElementById('g-loadmodel').textContent !== '载入中…'", timeout=300000)
-        switch_ms = (_t.time() - t_first) * 1000
-        check("常驻模型切换在 3 秒内完成", switch_ms < 3000, f"耗时 {switch_ms:.0f} ms")
-        pg.wait_for_timeout(2500)
+
+        def switch_to(mid, timeout=20):
+            """选下拉框就该自动切过去，不再有「载入」按钮这一步。"""
+            t0 = _t.time()
+            pg.select_option("#g-model", mid)
+            while (_t.time() - t0) < timeout:
+                if pg.evaluate("() => G.loaded") == mid and not pg.evaluate("() => G.stale"):
+                    break
+                pg.wait_for_timeout(50)
+            return (_t.time() - t0) * 1000
+
+        ms = switch_to(other)
+        check(f"选了 {other} 就自动切过去（无需点按钮）",
+              pg.evaluate("() => G.loaded") == other, pg.evaluate("() => G.loaded"))
+        # 三个模型常驻，切换只是改指针 + 开一局。3 秒是宽松上界（实测约 0.4 秒）
+        check("自动切换在 3 秒内完成", ms < 3000, f"耗时 {ms:.0f} ms")
         gpu2 = pg.locator("#g-gpu").inner_text()
         check(f"切到 {other} 成功", "失败" not in gpu2 and "上下文" in gpu2, gpu2)
         check("确认框跟着更新", pg.locator("#g-runname").inner_text() == MODEL_NAMES[other],
@@ -387,29 +390,31 @@ def main():
         # 两家的上下文长度不同，切换后这个数字必须跟着变
         buf = gpu2.split("上下文")[1].strip().split()[0]
         check("上下文帧数随模型变化", buf in ("9", "64"), f"读到 {buf}")
-        pg.wait_for_timeout(3000)
         blank2 = pg.evaluate("""() => {
             const c = document.getElementById('screen');
             const d = c.getContext('2d').getImageData(0,0,c.width,c.height).data;
             let s = 0; for (let i=0;i<d.length;i+=4) s += d[i]+d[i+1]+d[i+2];
             return s === 0; }""")
         check("换完模型自动开了新局（画面非全黑）", not blank2)
-        # 切完立刻能玩，而且发出的动作要是刚点的那个（上下文长度、动作表都换了模型）
+        # 切完的第一次点击必须生效。gameNew 里的 resetInput 曾经把这次点击一起清掉，
+        # 表现是「刚换完模型点一下没反应」，实测出 0 帧。
         n = tap("FWD")
         sent = pg.evaluate(f"() => G.rec.slice({n}).map(r => r.action)")
-        check("切完模型立刻能玩且动作正确",
+        check("切完模型第一次点击就生效且动作正确",
               len(sent) == 4 and set(sent) == {"FWD"}, f"实际 {sent}")
-        t_switch = _t.time()
-        pg.select_option("#g-model", cur_model)
-        pg.click("#g-loadmodel")
-        pg.wait_for_function("() => document.getElementById('g-loadmodel').textContent !== '载入中…'", timeout=300000)
-        pg.wait_for_timeout(2000)
-        check("切回原模型", "上下文" in pg.locator("#g-gpu").inner_text())
-        # 三个模型常驻，来回切都不重载权重。5 秒是宽松上界（实测不到 1 秒）
-        dt = _t.time() - t_switch - 2.0
-        check("来回切换不重载权重", dt < 5, f"耗时 {dt:.1f}s")
+
+        ms_back = switch_to(cur_model)
+        check("切回原模型", pg.evaluate("() => G.loaded") == cur_model)
+        check("来回切换不重载权重", ms_back < 3000, f"耗时 {ms_back:.0f} ms")
         buf_back = pg.locator("#g-gpu").inner_text().split("上下文")[1].strip().split()[0]
         check("切回来上下文帧数也跟着回去", buf_back != buf, f"{buf} -> {buf_back}")
+
+        print("7b) session 失效后第一次点击不许被吃掉")
+        pg.evaluate("() => { G.sid = null; }")
+        n = tap("TLEFT")
+        sent = pg.evaluate(f"() => G.rec.slice({n}).map(r => r.action)")
+        check("补开 session 后那次点击仍然生效",
+              len(sent) == 4 and set(sent) == {"TLEFT"}, f"实际 {sent}")
 
         print("8) 切到数据标签")
         tabs.nth(1).click()                      # 一级：数据预览

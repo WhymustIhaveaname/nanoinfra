@@ -91,11 +91,6 @@
   .stats .note { max-width: 420px; }
   .stats b { color: var(--fg); }
   .stats .big { font-size: 26px; color: var(--ok); font-weight: 600; }
-  /* top/left 必须写：absolute 元素不给偏移就落在静态位置，也就是掉到 canvas 下面 */
-  #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 512px; display: flex;
-             align-items: center; justify-content: center; text-align: center;
-             background: rgba(15,17,21,.82); color: var(--fg); font-size: 15px;
-             border-radius: 4px; pointer-events: none; }
   .rel { position: relative; width: 640px; max-width: 100%; }
   /* 操作按钮：键盘之外的第二条路。不支持的动作自动禁用并标灰。 */
   #g-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
@@ -121,10 +116,9 @@
   /* ===== 窄屏适配。必须放在最后：同优先级下后写的规则赢，
      以前放在前面被 #g-pad { width: 640px } 直接盖掉。 ===== */
   @media (max-width: 1000px) {
-    .gamecol, #g-pad, .rel, #screen, #overlay { width: 100%; max-width: 640px; }
+    .gamecol, #g-pad, .rel, #screen { width: 100%; max-width: 640px; }
     .gamecol { flex: 1 1 100%; }
     #screen { height: auto; aspect-ratio: 320 / 256; }
-    #overlay { height: 100%; }
     .stats { flex: 1 1 100%; max-width: 100%; }
   }
   @media (max-width: 1000px) {
@@ -164,10 +158,8 @@
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <label style="white-space:nowrap">模型</label>
             <select class="btn" id="g-model" style="flex:1;min-width:240px"></select>
-            <button class="btn" id="g-loadmodel">载入</button>
           </div>
           <p class="note" id="g-modelnote" style="margin:6px 0 0;font-size:12px"></p>
-          <p class="mono" id="g-stale" style="margin:2px 0 0;color:var(--warn)"></p>
           <div id="g-progwrap" style="display:none;margin-top:8px">
             <div class="bar"><div class="fill" id="g-progfill"></div></div>
             <div class="mono" id="g-progtext" style="margin-top:4px"></div>
@@ -177,7 +169,6 @@
 
         <div class="rel">
           <canvas id="screen" width="320" height="256"></canvas>
-          <div id="overlay"></div>
         </div>
         <div id="g-pad">
           <button class="padbtn" data-act="TLEFT">↺ 左转</button>
@@ -320,10 +311,13 @@ function startReplay() {
 }
 
 function stopReplay() {
+  const was = G.replaying;
   if (G.replayTimer) clearInterval(G.replayTimer);
   G.replayTimer = null;
   G.replaying = false;
-  resetInput();
+  // 只有真在回放时才清输入（清的是回放期间攒下的点击）。无条件清的话，
+  // gameNew 顺手调一次 stopReplay 就会把「触发这一轮的那次点击」也抹掉。
+  if (was) resetInput();
   syncPadEnabled();
   const b = $('g-replay');
   if (b) b.textContent = '▶ 回放本局';
@@ -354,14 +348,18 @@ function drawFrame(dataUrl) {
   img.src = dataUrl;
 }
 
-async function gameNew(keepRec) {
+// keepInput：从 gameLoop 里补开 session 时必须传 true。
+// 不传的话 resetInput() 会把「触发这一轮循环的那次点击」一起清掉，
+// 于是 session 失效后的第一次点击被静默吃掉（实测点左转出 0 帧）。
+async function gameNew(keepRec, keepInput) {
   $('g-err').textContent = '';
   try {
     const r = await api(GAME_API + '/new', {method: 'POST', body: JSON.stringify({})});
     const d = await r.json();
     G.sid = d.id; G.steps = 0; G.times = [];
     if (!keepRec) { G.rec = []; G.dropped = 0; }   // 重连不该抹掉玩家的录制
-    resetInput(); stopReplay(); updateRecUI();
+    if (!keepInput) resetInput();
+    stopReplay(); updateRecUI();
     drawFrame(d.frame);
     $('g-steps').textContent = '0';
     $('g-fps').textContent = '— fps';
@@ -409,7 +407,7 @@ async function gameLoop() {
   G.scrubbing = false;      // 又开始玩了，进度条回到跟随最新帧
   let again = false;
   try {
-    if (!G.sid) { await gameNew(); if (!G.sid) return; }
+    if (!G.sid) { await gameNew(true, true); if (!G.sid) return; }
     // 训练数据里按键连着 4 帧不变（采数据的 PPO 每 4 帧才改一次按键，实测
     // 1106 段里 972 段恰好长 4）。这里也把一次按键连发 REPEAT 帧，中途不重读输入。
     if (G.repeatLeft > 0 && G.heldButtons) {
@@ -433,7 +431,7 @@ async function gameLoop() {
       if (modelChanged) probeServer();   // 界面上的模型名也得跟着换
       G.sid = null;
       G.repeatLeft = 0; G.heldButtons = null;
-      await gameNew(!modelChanged);
+      await gameNew(!modelChanged, true);
       return;
     }
     if (r.status === 422) {                // 当前模型没有这组按键
@@ -502,8 +500,9 @@ function initGame() {
     };
   }
   $('g-new').onclick = () => gameNew();
-  $('g-loadmodel').onclick = loadModel;
-  $('g-model').onchange = () => { showModelNote(); syncModelState(); };
+  // 三个模型都常驻显存，切换只是改个指针（实测 50–93ms），
+  // 所以下拉框选了就直接切，不再多一步「载入」按钮。
+  $('g-model').onchange = () => { showModelNote(); switchModel(); };
 
   probeServer();
 }
@@ -530,43 +529,28 @@ function syncPadEnabled() {
     const noAct = (a === 'BACK' && !G.hasBack) || (a === '' && !G.hasNoop);
     b.disabled = noAct || G.stale || G.replaying;
     b.title = noAct ? '当前模型没有这个动作'
-            : G.stale ? '先点「载入」' : G.replaying ? '回放中' : '';
+            : G.stale ? '模型切换中' : G.replaying ? '回放中' : '';
   }
 }
 
-// 遮罩只有一个用途：选了别的模型还没切换时盖住画面，提醒先切。
-// 没有键盘之后不再需要「点击画面开始」那一层。
-function syncOverlay() {
-  document.getElementById('overlay').style.display = G.stale ? 'flex' : 'none';
-}
-
+// 下拉框选的和显存里跑的不一致 = stale。这段时间一帧都不许发：
+// 否则会出现「界面写着 A、实际在跑 B」——玩家据此得出的结论全是错的。
+// 常驻之后这个窗口只有几十毫秒，但换模型失败、后端连不上时它会持续，
+// 所以这条防线不能撤。
 function syncModelState() {
   const sel = document.getElementById('g-model');
-  // 判据必须含「服务端没有已载入模型」这一种：以前写成 !!G.loaded && ...，
-  // 于是 loaded 为 null 时 stale 恒 false，载入按钮被永久禁用，页面只能刷新。
   G.stale = sel.value !== G.loaded;
-  const btn = document.getElementById('g-loadmodel');
-  // 选中的就是正在跑的，没什么可载的——禁掉按钮，别让人白等一遍。
-  btn.disabled = !G.stale;
-  // 在池子里的模型不需要重载权重，改个指针就完事（实测 50–93ms）。
-  // 按钮上写「载入」会让人以为又要等十几秒。
-  const resident = G.pool.includes(sel.value);
-  btn.textContent = !G.stale ? '已载入' : resident ? '切换' : '载入';
-  btn.style.borderColor = G.stale ? 'var(--warn)' : '';
-  btn.style.color = G.stale ? 'var(--warn)' : '';
-  btn.style.opacity = G.stale ? '' : '.5';
-  btn.style.cursor = G.stale ? '' : 'default';
-  syncOverlay();
   syncPadEnabled();
-  document.getElementById('g-stale').textContent = !G.stale ? ''
-    : resident ? '↑ 选了别的模型，点「切换」（已常驻显存，瞬时）'
-               : '↑ 选了别的模型，点「载入」后才能玩';
   const run = document.getElementById('g-running');
-  document.getElementById('g-runname').textContent = G.loadedName || '—';
   run.className = G.stale ? 'stale' : '';
-  run.firstChild.textContent = G.stale ? '仍在玩（未切换）：' : '当前正在玩：';
-  document.getElementById('overlay').textContent =
-    resident ? '先点「切换」' : '先点「载入」把选中的模型装进显存';
+  if (G.stale) {
+    const want = (MODELS.find(m => m.id === sel.value) || {}).name || sel.value;
+    run.firstChild.textContent = '切换中：';
+    document.getElementById('g-runname').textContent = want;
+  } else {
+    run.firstChild.textContent = '当前正在玩：';
+    document.getElementById('g-runname').textContent = G.loadedName || '—';
+  }
 }
 
 function showModelNote() {
@@ -577,15 +561,17 @@ function showModelNote() {
       + ` · <a href="${m.repo}" target="_blank" style="color:var(--accent)">权重</a>` : '';
 }
 
-async function loadModel() {
+async function switchModel() {
   const $ = id => document.getElementById(id);
   const id = $('g-model').value;
-  const btn = $('g-loadmodel');
+  if (id === G.loaded) { syncModelState(); return; }
   G.sid = null;
-  btn.disabled = true; btn.textContent = '载入中…';
-  $('g-model').disabled = true;   // 载入途中不许改选，否则装完对不上号
+  syncModelState();               // 立刻进入 stale：按钮置灰、读数写「切换中」
+  $('g-model').disabled = true;   // 切换途中不许再改选，否则装完对不上号
   $('g-err').textContent = '';
-  $('g-progwrap').style.display = '';
+  // 常驻的模型几十毫秒就切完，进度条只会闪一下；只在真要载权重时才显示
+  const resident = G.pool.includes(id);
+  if (!resident) $('g-progwrap').style.display = '';
   // 真进度：/status 不排队进 GPU 线程，所以 GPU 忙着时也读得到当前阶段。
   const t0 = performance.now();
   const poll = setInterval(async () => {
@@ -605,14 +591,16 @@ async function loadModel() {
     $('g-progfill').style.width = '100%';
     probeServer();
   } catch (e) {
-    $('g-err').innerHTML = `<span class="bad">载入失败：${e.message}</span>`;
+    // 切换失败：把下拉框退回到真正在跑的那个，界面和显存必须一致
+    $('g-err').innerHTML = `<span class="bad">切换失败：${e.message}，已退回</span>`;
+    if (G.loaded) $('g-model').value = G.loaded;
+    showModelNote();
   } finally {
     clearInterval(poll);
     setTimeout(() => { $('g-progwrap').style.display = 'none';
                        $('g-progfill').style.width = '0%'; }, 600);
     $('g-model').disabled = false;
-    btn.disabled = false; btn.textContent = '载入';
-    syncModelState();            // 让按钮状态回到「已载入/待载入」的正确一侧
+    syncModelState();
   }
 }
 
@@ -644,13 +632,14 @@ function probeServer() {
     $('g-gpu').textContent =
       `${d.gpu} · ${d.steps} 步去噪 · ${d.res} · 上下文 ${d.buffer} 帧`
       + (G.pool.length > 1 ? ` · ${G.pool.length} 个模型常驻显存` : '');
-    syncModelState();
+    // syncModelState 会解除 stale（放开游玩），所以必须等新 session 建好之后再调。
+    // 早调的话中间有一小段「按钮可点、但 G.sid 还是 null」的窗口。
     if (d.bench) {
       $('g-bench').innerHTML =
         `启动基准（${d.bench.n} 帧连续前进）：<b>${d.bench.mean_ms} ms/帧</b> = `
         + `<b>${d.bench.fps} fps</b>，抖动 ${d.bench.min_ms}–${d.bench.max_ms} ms`;
     }
-    gameNew();
+    return gameNew().then(syncModelState);
   }).catch(() => {
     // 连不上就必须掐掉游玩。以前这条分支只改了两行文字，G.stale 还停在
     // false，于是页面写着「推理服务未启动」却照样能点出帧来。
