@@ -264,8 +264,15 @@ class Engine:
         return png, time.time() - t0
 
 
+# 帧走 JPEG 而不是 PNG。实测经 SSH 隧道传一帧 130KB 的 PNG 要 1.2-2.2 秒，
+# 而推理本身只要 185ms——瓶颈完全在传输上，玩起来就是「按了没反应」。
+# JPEG q85 同一帧约 10-15KB，小一个数量级。这里是给人看的实时画面，
+# 不是数据预览页那种要逐像素比较编解码损失的地方，有损压缩无妨。
+JPEG_QUALITY = 85
+
+
 def to_png(img):
-    """VAE 解出来的图 -> PNG bytes。
+    """VAE 解出来的图 -> JPEG bytes（函数名沿用，调用方不必改）。
 
     形状不固定：diffusers 的 postprocess 在 output_type='pt' 下可能给 [B,C,H,W]
     也可能给 [C,H,W]，还可能是长度 1 的 list，所以这里一律归一化到 [C,H,W]。
@@ -280,7 +287,8 @@ def to_png(img):
     if a.shape[2] == 1:
         a = a.repeat(3, axis=2)
     buf = io.BytesIO()
-    Image.fromarray((a * 255).round().astype(np.uint8)).save(buf, "PNG")
+    Image.fromarray((a * 255).round().astype(np.uint8)).save(
+        buf, "JPEG", quality=JPEG_QUALITY, optimize=False)
     return buf.getvalue()
 
 
@@ -434,7 +442,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def b64(png):
-    return "data:image/png;base64," + base64.b64encode(png).decode()
+    return "data:image/jpeg;base64," + base64.b64encode(png).decode()
 
 
 WARMUP = 3          # 预热帧数：吃掉 cuDNN 自动调优 + GPU 升频的一次性开销

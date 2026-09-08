@@ -101,10 +101,20 @@
              background: rgba(15,17,21,.82); color: var(--fg); font-size: 15px;
              border-radius: 4px; pointer-events: none; }
   .rel { position: relative; width: 640px; }
-  #g-unsupported { position: absolute; left: 0; right: 0; bottom: 14px;
-                   text-align: center; pointer-events: none; opacity: 0;
-                   transition: opacity .18s; color: var(--warn); font-size: 14px;
-                   text-shadow: 0 1px 4px #000, 0 0 10px #000; }
+  /* 操作按钮：键盘之外的第二条路。不支持的动作自动禁用并标灰。 */
+  #g-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
+           width: 640px; margin-top: 10px; }
+  .padbtn { background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+            padding: 9px 6px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  .padbtn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .padbtn:active:not(:disabled) { background: var(--accent); color: #0f1115; }
+  .padbtn:disabled { opacity: .3; cursor: not-allowed; }
+  .padbtn[data-act="ATTACK"] { grid-column: span 2; }
+  /* 提示放在录制区那一行，不再压画面——压在 HUD 上根本看不清 */
+  #g-unsupported { opacity: 0; transition: opacity .18s; color: var(--warn);
+                   font-size: 13px; font-weight: 600; white-space: nowrap;
+                   background: #3a2f1a; border: 1px solid var(--warn);
+                   border-radius: 4px; padding: 2px 10px; }
   .modelbar { border: 1px solid var(--line); border-radius: 6px;
               padding: 12px 14px; margin-bottom: 14px; background: #13161c; }
   .bar { height: 6px; background: #1e222b; border-radius: 3px; overflow: hidden; }
@@ -157,13 +167,23 @@
         <div class="rel">
           <canvas id="screen" width="320" height="256"></canvas>
           <div id="overlay">点击画面开始 · 按键才生成，松手定格 · Esc 退出</div>
-          <div id="g-unsupported"></div>
+        </div>
+        <div id="g-pad">
+          <button class="padbtn" data-act="TLEFT">↺ 左转</button>
+          <button class="padbtn" data-act="FWD">↑ 前进</button>
+          <button class="padbtn" data-act="TRIGHT">↻ 右转</button>
+          <button class="padbtn" data-act="MLEFT">← 左移</button>
+          <button class="padbtn" data-act="BACK">↓ 后退</button>
+          <button class="padbtn" data-act="MRIGHT">→ 右移</button>
+          <button class="padbtn" data-act="ATTACK">● 开火</button>
+          <button class="padbtn" data-act="">□ 不动</button>
         </div>
         <div id="g-recbar" style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
           <button class="btn" id="g-replay">▶ 回放本局</button>
           <label>帧 <input type="range" id="g-scrub" min="0" max="0" value="0" style="width:260px">
             <span class="val" id="g-scrubv">0 / 0</span></label>
           <span class="mono" id="g-recact"></span>
+          <span id="g-unsupported"></span>
         </div>
         <div class="acts" id="g-recacts" style="margin-top:6px;max-height:66px;overflow-y:auto"></div>
         <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
@@ -225,6 +245,7 @@ const G = {
   loaded: null,      // 显存里真正装着的模型 id
   hasNoop: false, hasBack: false,   // 当前模型支持哪些动作
   heldButtons: null, repeatLeft: 0,   // 当前这组按键还要再发几帧
+  padButtons: [], padShots: 0,        // 操作按钮排队中的动作
   // 本局回放：每帧存下画面和当时的动作。上限 600 帧（约 2 分钟），
   // 超了就丢最老的——一帧 PNG 约 100KB，不设上限会把浏览器内存吃光。
   rec: [], recMax: 600,
@@ -286,6 +307,8 @@ function stopReplay() {
 }
 
 function pickButtons() {
+  // 操作按钮优先：它是一次明确的点击，不该被同时按住的键盖掉
+  if (G.padShots > 0) { G.padShots--; return G.padButtons; }
   let turn = 0;
   if (G.dx >  TURN_DEADZONE) turn =  1;
   if (G.dx < -TURN_DEADZONE) turn = -1;
@@ -346,69 +369,70 @@ function hasInput() {
   // 不停被 422 拒绝，白烧 GPU。空格只在模型确实有「不动」这个动作时才算输入。
   for (const k of ['w', 'a', 's', 'd']) if (G.keys.has(k)) return true;
   if (G.keys.has(' ') && G.hasNoop) return true;
+  if (G.padShots > 0) return true;           // 点了操作按钮
   return G.fire || Math.abs(G.dx) > TURN_DEADZONE;
 }
 
 async function gameLoop() {
   if (!G.locked || G.stepping || G.stale || G.replaying) return;
   if (!hasInput()) return;                 // 松手就停在这里
-  // 守卫必须设在任何 await 之前。设在 gameNew() 之后的话，开局那 0.5-3 秒里
-  // 键盘自动重复会再进来一次，开出第二个 session 和第二条自调度链，
-  // 两局的帧交替画在同一块画布上，帧率减半。
+  // stepping 这个标志位必须由 finally 统一释放。以前在每条 return 分支里手动清，
+  // 漏掉一条就永久卡死——表现正是「按键大部分时候没反应，偶尔有反应」。
   G.stepping = true;
-  if (!G.sid) { await gameNew(); if (!G.sid) { G.stepping = false; return; } }
-  // 训练数据里按键是连着 4 帧不变的（采数据的 PPO 每 4 帧才改一次按键，
-  // 实测 1106 段里 972 段恰好长 4）。所以这里也把一次按键连发 REPEAT 帧，
-  // 中途不重读输入——既贴合模型见过的样子，也让动作记录填满得快 4 倍。
-  if (G.repeatLeft > 0 && G.heldButtons) {
-    G.repeatLeft--;
-  } else {
-    G.heldButtons = pickButtons();
-    G.repeatLeft = REPEAT - 1;
-  }
-  const buttons = G.heldButtons;
-  const t0 = performance.now();
+  let again = false;
   try {
+    if (!G.sid) { await gameNew(); if (!G.sid) return; }
+    // 训练数据里按键连着 4 帧不变（采数据的 PPO 每 4 帧才改一次按键，实测
+    // 1106 段里 972 段恰好长 4）。这里也把一次按键连发 REPEAT 帧，中途不重读输入。
+    if (G.repeatLeft > 0 && G.heldButtons) {
+      G.repeatLeft--;
+    } else {
+      G.heldButtons = pickButtons();
+      G.repeatLeft = REPEAT - 1;
+    }
+    const buttons = G.heldButtons;
+    const t0 = performance.now();
     const r = await fetch(GAME_API + '/step', {
       method: 'POST', body: JSON.stringify({id: G.sid, buttons})});
-    if (r.status === 410) {        // session 失效（或模型被换掉）
-      G.sid = null; G.stepping = false;
-      // buttons 已经把 dx 和 fire 消费掉了，补回去，否则这一下鼠标转向会丢
+
+    if (r.status === 410) {                // session 失效，或模型被换掉
+      G.sid = null;
+      // buttons 已经把 dx 和 fire 消费掉了，补回去，否则这一下转向/开火会丢
       if (buttons.includes('TLEFT'))  G.dx -= TURN_DEADZONE + 1;
       if (buttons.includes('TRIGHT')) G.dx += TURN_DEADZONE + 1;
       if (buttons.includes('ATTACK')) G.fire = true;
-      return gameLoop();
+      G.repeatLeft = 0; G.heldButtons = null;
+      again = true;
+      return;
     }
-    if (r.status === 422) {          // 这个模型的表里没有这组按键（比如 a16z 没有 NOOP）
+    if (r.status === 422) {                // 当前模型没有这组按键
       $('g-act').textContent = '该模型无此动作';
-      G.stepping = false; return;
+      G.repeatLeft = 0; G.heldButtons = null;
+      return;
     }
+    if (!r.ok) { $('g-err').innerHTML = `<span class="bad">服务端 ${r.status}</span>`; return; }
+
     const d = await r.json();
-    // 松手的瞬间往往已有一帧在服务端算着了。它回来时手早松了，画出来就是
-    // 「松手后画面又动了一下」。所以这里再查一次：手已经松了就丢掉这一帧。
-    // 判据必须是「还有没有输入」，不能只看鼠标锁——松的通常是键，不是锁。
-    if (!hasInput()) { G.stepping = false; return; }
     drawFrame(d.frame);
     G.rec.push({frame: d.frame, action: d.action, ms: d.ms});
     if (G.rec.length > G.recMax) G.rec.shift();
     updateRecUI();
     G.steps = d.steps;
     const wall = performance.now() - t0;
-    // 丢掉本局第一帧：它带着 cuDNN 自动调优和 GPU 升频的一次性成本，算进均值会
-    // 让显示的 fps 长时间偏低一大截。服务端也已经预热过一帧，这里是双保险。
-    // d.steps 是服务端自增后的值，第一帧就是 1，所以不能用它判断。
+    // d.steps 是服务端自增后的值，第一帧就是 1
     if (d.steps > 1) { G.times.push(wall); if (G.times.length > 15) G.times.shift(); }
     const mean = G.times.length ? G.times.reduce((a, b) => a + b, 0) / G.times.length : wall;
     $('g-ms').textContent = d.ms.toFixed(0);
     $('g-steps').textContent = d.steps;
     $('g-act').textContent = d.action;
     $('g-fps').textContent = (1000 / mean * G.speed).toFixed(2) + ' fps';
-    G.stepping = false;
-    // 键还按着就接着走（连按/按住 = 连续生成），速度档在这里拉开间隔
-    setTimeout(gameLoop, Math.max(0, (1 / G.speed - 1) * wall));
+    again = true;
+    G.nextDelay = Math.max(0, (1 / G.speed - 1) * wall);
   } catch (e) {
     $('g-err').innerHTML = '<span class="bad">推理请求失败，已停。</span>';
-    G.stepping = false;
+  } finally {
+    G.stepping = false;                    // 无论走哪条路都要放开
+    if (again) setTimeout(gameLoop, G.nextDelay || 0);
   }
 }
 
@@ -446,6 +470,16 @@ function initGame() {
     const i = e.target.dataset && e.target.dataset.i;
     if (i !== undefined) { stopReplay(); showRecFrame(+i); }
   };
+  // 按钮点一下就发一组动作，和键盘走同一条路径（同样重复 REPEAT 帧）
+  for (const b of document.querySelectorAll('.padbtn')) {
+    b.onclick = () => {
+      const act = b.dataset.act;
+      if (!G.locked) { G.locked = true; }      // 用按钮玩不需要锁鼠标
+      G.padButtons = act ? [act] : [];
+      G.padShots = REPEAT;
+      gameLoop();
+    };
+  }
   $('g-new').onclick = gameNew;
   $('g-loadmodel').onclick = loadModel;
   $('g-model').onchange = () => { showModelNote(); syncModelState(); };
@@ -575,6 +609,11 @@ function notSupported(what) {
     }
     G.hasNoop = !!d.has_noop;
     G.hasBack = (d.actions || []).some(a => a.split('+').includes('BACK'));
+    for (const b of document.querySelectorAll('.padbtn')) {
+      const a = b.dataset.act;
+      b.disabled = (a === 'BACK' && !G.hasBack) || (a === '' && !G.hasNoop);
+      b.title = b.disabled ? '当前模型没有这个动作' : '';
+    }
     G.loaded = d.loaded;
     G.loadedName = (MODELS.find(m => m.id === d.loaded) || {}).name || d.loaded;
     $('g-gpu').textContent =
