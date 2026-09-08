@@ -28,6 +28,10 @@ cd "$(dirname "$0")"
 HOST=${GAMENGEN_HOST:-1202b}
 GPU=${GAMENGEN_GPU:-1}          # 远端用第几张卡
 PORT=25677
+# 占卡：把整张卡占满，别让人挤进来抢 SM。留给峰值的余量（GiB），0 = 不占。
+# 服务**运行中**由 doom_ngen_server.py 自己管（换模型和 OOM 时自动让开），
+# 这里的 gpu_hold.py 只负责服务**停着**的那段时间，免得卡被别人拿走。
+HOLD=${GAMENGEN_HOLD:-1.5}
 B=/tmp/youran-gamengen
 
 mkdir -p outputs outputs/gamengen
@@ -36,6 +40,28 @@ remote() { ssh -o BatchMode=yes "$HOST" bash -s; }
 
 # 隧道有两种存在形式，都要清：独立的 ssh -N 进程，以及挂在共享主连接上的转发。
 # 只清前者的话端口仍被占着，而且没有任何进程能让你看出来是谁占的。
+# 1202b 是共享机器。推理服务只吃 4–13 GB，一张 A6000 剩下三十多 GB 空着，
+# 别人的任务看见空位就挤上来和我们抢同一张卡的 SM。占位进程把剩余显存吃掉，
+# 让别人的分配在这张卡上失败，自动去挑别的卡。它只 sleep，不占 SM。
+hold_gpu() {
+  [ "${HOLD:-0}" = "0" ] && return 0
+  remote <<EOS
+pkill -u \$(whoami) -f "gpu_hold.py" 2>/dev/null
+sleep 6
+cd $B/app/gamengen
+CUDA_VISIBLE_DEVICES=$GPU nohup $B/.venv/bin/python gpu_hold.py \
+      --leave $HOLD --poll 60 > $B/hold.log 2>&1 &
+sleep 12
+grep -E '已占|共' $B/hold.log | tail -2
+EOS
+}
+
+release_gpu() {
+  remote <<EOS
+pkill -u \$(whoami) -f "gpu_hold.py" 2>/dev/null && echo "占卡已释放"
+EOS
+}
+
 kill_tunnel() {
   pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" 2>/dev/null
   ssh -O cancel -L "0.0.0.0:$PORT:127.0.0.1:$PORT" "$HOST" 2>/dev/null
@@ -61,7 +87,7 @@ VIRTUAL_ENV=$B/.venv $B/uv pip install --no-cache \
 $B/.venv/bin/python -c "import torch; print('torch', torch.__version__, '| 卡数', torch.cuda.device_count())"
 EOS
   echo "[2/3] 传代码"
-  tar cz gamengen/doom_ngen_server.py gamengen/models.json gamengen/upstream \
+  tar cz gamengen/doom_ngen_server.py gamengen/gpu_hold.py gamengen/models.json gamengen/upstream \
     | ssh -o BatchMode=yes "$HOST" "mkdir -p $B/app && tar xz -C $B/app"
   echo "[3/3] 下权重（约 12GB）"
   remote <<EOS
@@ -89,16 +115,17 @@ start)
   # 每次 start 都推一遍代码。以前只有 setup 推，改完服务端跑 start 起来的还是旧代码，
   # 而且日志和 /info 全都正常，看不出来——这种静默的版本错位最难查。
   echo "推代码"
-  tar cz gamengen/doom_ngen_server.py gamengen/models.json gamengen/upstream \
+  tar cz gamengen/doom_ngen_server.py gamengen/gpu_hold.py gamengen/models.json gamengen/upstream \
     | ssh -o BatchMode=yes "$HOST" "mkdir -p $B/app && tar xz -C $B/app"
   echo "起远端服务（$HOST GPU $GPU）"
   remote <<EOS
 pkill -u \$(whoami) -f "doom_ngen_server.py --port $PORT" 2>/dev/null
-sleep 2
+pkill -u \$(whoami) -f "gpu_hold.py" 2>/dev/null   # 服务自己会占卡，外挂的先撤
+sleep 6
 cd $B/app/gamengen
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=$GPU \
   nohup $B/.venv/bin/python doom_ngen_server.py --port $PORT \
-        --bind 127.0.0.1 --bench 25 --base $B/weights \
+        --bind 127.0.0.1 --bench 25 --base $B/weights --hold-leave $HOLD \
         > $B/server.log 2>&1 &
 echo "  远端 PID \$!"
 EOS
@@ -108,6 +135,8 @@ EOS
     if ssh -o BatchMode=yes "$HOST" "grep -q '\[serve\]' $B/server.log" 2>/dev/null; then break; fi
   done
   ssh -o BatchMode=yes "$HOST" "grep -E 'bench|serve' $B/server.log | tail -2"
+
+  ssh -o BatchMode=yes "$HOST" "grep '\[ballast\]' $B/server.log | tail -1"
 
   # 本机若有服务占着这个端口，先让位
   LOCAL=$(ps -u "$(whoami)" -o pid,cmd | grep "[d]oom_ngen_server.py --port $PORT" | awk '{print $1}')
@@ -158,6 +187,10 @@ stop)
   remote <<EOS
 pkill -u \$(whoami) -f "doom_ngen_server.py --port $PORT" && echo "远端服务已停" || echo "远端本来就没跑"
 EOS
+  # 服务一停，卡上的压舱显存也随进程还回去了。换外挂占位接手，
+  # 否则别人立刻就把这张卡拿走，下次 start 又得和人挤。
+  echo "  交给占位进程守着这张卡（unhold 可彻底放开）"
+  hold_gpu
   ;;
 
 status)
@@ -167,9 +200,15 @@ status)
     2>/dev/null || echo "  :$PORT 无响应"
   remote <<EOS
 echo "远端进程: \$(pgrep -u \$(whoami) -f 'doom_ngen_server.py --port $PORT' >/dev/null && echo 在 || echo 无)"
-nvidia-smi --query-gpu=index,memory.used --format=csv,noheader | sed -n "\$((${GPU}+1))p"
+echo "占卡进程: \$(pgrep -u \$(whoami) -f 'gpu_hold.py' >/dev/null && echo 在 || echo 无)"
+echo -n "GPU $GPU: "
+nvidia-smi --query-gpu=index,memory.used,memory.total,utilization.gpu --format=csv,noheader | sed -n "\$((${GPU}+1))p"
+echo "同卡上的其他人:"
+nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv,noheader | head -20
 EOS
   ;;
 
-*) echo "用法: $0 [setup|start|stop|status]"; exit 1 ;;
+hold)    hold_gpu ;;
+unhold)  release_gpu ;;
+*) echo "用法: $0 [setup|start|stop|status|hold|unhold]"; exit 1 ;;
 esac

@@ -135,6 +135,46 @@ def progress(phase, done=0, total=0):
 # 0.30s，20 倍。把计算钉在一个长期存活的线程上，这笔开销一辈子只付一次。
 _JOBS = queue.Queue()
 
+# 1202b 是共享机器。推理服务稳态只吃 4.3 GB，一张 A6000 剩下四十多 GB 空着，
+# 别人的任务看见空位就挤上来抢同一张卡的 SM，我们的帧率跟着掉，而且从 nvidia-smi
+# 上看只会以为「卡变慢了」。
+#
+# 做法是自己管：空闲时把剩余显存全部占成压舱物，要用时（换模型、推理 OOM）自己让开。
+# 压舱物只是一块不动的张量，不占 SM、不耗电，对别人的利用率读数没有影响。
+#
+# 所有分配释放都必须在 GPU 工作线程里做，和推理同一个 CUDA 上下文，否则显存
+# 会记在别的上下文名下，empty_cache 也放不干净。
+_BALLAST = []
+_BALLAST_LEAVE = 1.5      # 留多少 GiB 给自己的瞬时峰值；命令行可改
+GiB = 1024 ** 3
+
+
+def ballast_release():
+    """把压舱物全部还回去。换模型和 OOM 重试前调用。"""
+    if not _BALLAST:
+        return 0.0
+    n = sum(b.numel() * b.element_size() for b in _BALLAST) / GiB
+    _BALLAST.clear()
+    torch.cuda.empty_cache()
+    return n
+
+
+def ballast_grab():
+    """把当前空闲的显存占到只剩 _BALLAST_LEAVE GiB。"""
+    if not torch.cuda.is_available() or _BALLAST_LEAVE <= 0:
+        return 0.0
+    got, chunk = 0.0, int(0.5 * GiB) // 2        # float16，一个元素 2 字节
+    while True:
+        free, _ = torch.cuda.mem_get_info()
+        if free <= _BALLAST_LEAVE * GiB:
+            break
+        try:
+            _BALLAST.append(torch.empty(chunk, dtype=torch.float16, device="cuda"))
+            got += 0.5
+        except torch.cuda.OutOfMemoryError:
+            break                                # 被人抢先了，下次再补
+    return got
+
 
 def _worker():
     while True:
@@ -401,7 +441,15 @@ class Handler(BaseHTTPRequestHandler):
                 cur = _CUR["engine"]
                 if cur is None or _CUR["id"] != s.get("model"):
                     raise RuntimeError("model")
-                return cur.step(s, req["action"], req.get("noise"))
+                try:
+                    return cur.step(s, req["action"], req.get("noise"))
+                except torch.cuda.OutOfMemoryError:
+                    # 压舱物占得太满，或者别人抢走了我们留的余量。
+                    # 让开再试一次——宁可少占，也不能因为占卡把自己噎死。
+                    freed = ballast_release()
+                    print(f"[ballast] 推理 OOM，让出 {freed:.1f} GiB 后重试",
+                          flush=True)
+                    return cur.step(s, req["action"], req.get("noise"))
             try:
                 png, dt = run_on_gpu(_do, timeout=90)
             except TimeoutError:
@@ -470,6 +518,9 @@ def load_model_by_id(mid, args, rebench=False):
     base = Path(args.base)
     t0 = time.time()
     progress("腾显存")
+    freed = ballast_release()  # 先把压舱物还回去，否则新模型分不到显存
+    if freed:
+        print(f"[ballast] 让出 {freed:.1f} GiB", flush=True)
     _CUR["id"] = None          # 载入失败时不要继续声称旧模型还在
     if _CUR["engine"] is not None:
         _CUR["engine"] = None
@@ -509,6 +560,11 @@ def load_model_by_id(mid, args, rebench=False):
         warmup(eng)
         bench = None
     _CUR.update(id=mid, engine=eng, load_ms=load_ms, bench=bench)
+    # 载完（含预热／测速的峰值都过去了）再把剩下的显存占回来
+    got = ballast_grab()
+    if got:
+        free, total = torch.cuda.mem_get_info()
+        print(f"[ballast] 占回 {got:.1f} GiB，卡上剩 {free / GiB:.1f}/{total / GiB:.1f} GiB", flush=True)
     progress("")
     return _CUR
 
@@ -552,7 +608,14 @@ def main():
     # 因为浏览器是从别的机器访问这台机的 IP 的。
     ap.add_argument("--bind", default="127.0.0.1")
     ap.add_argument("--bench", type=int, default=20, help="启动时测多少帧，0=不测")
+    # 共享机器上把整张卡占住，别让人挤进来抢 SM。留给自己的瞬时峰值余量（GiB）；
+    # 设 0 = 不占卡。换模型和推理 OOM 时会自动让开，所以这个数不用留很大。
+    ap.add_argument("--hold-leave", type=float, default=1.5,
+                    help="占满整张卡，只留这么多 GiB 给自己的峰值；0=不占卡")
     a = ap.parse_args()
+
+    global _BALLAST_LEAVE
+    _BALLAST_LEAVE = a.hold_leave
 
     spec = json.loads(Path(a.models).read_text())
     listed = [m for m in spec["models"]

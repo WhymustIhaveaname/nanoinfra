@@ -93,11 +93,31 @@ The fix looks like it works, but nothing changed.
 `ssh -O cancel -L ...` to remove a forward from the master connection.
 A dedicated tunnel measures about 50 ms.
 
-**1202b is a shared machine. Other users can make it slow.**
-Measured once: load average 91 on 128 cores, from another user's jobs.
-Our GPU still made a frame in 183 ms, but the SSH forward became slow.
-Check with `ssh 1202b uptime` before you report a slow page.
-If 1202b is busy, use the local GPU with `bash run.sh game`.
+**1202b is a shared machine. The server holds the whole GPU.**
+The inference server needs only 4.3 GB. An A6000 has 47 GB.
+Another user's job takes the free memory and then shares the SM with us.
+Our frame rate falls, and `nvidia-smi` only shows a slow card.
+
+The server holds the free memory as ballast, and it manages the ballast itself:
+
+- After a model load, it takes all free memory except `--hold-leave` GiB
+  (default 1.5). Measured: it holds 42.5 GiB and leaves 1.0 GiB.
+- Before a model load, it gives the ballast back, because the new model
+  needs the memory.
+- If an inference gets an out-of-memory error, it gives the ballast back and
+  tries again. To hold the card must never block our own work.
+
+Verified: four model switches and 30 frames, zero out-of-memory errors.
+The ballast is one large tensor. It does not use the SM and it uses no power.
+
+`gpu_hold.py` does the same for the time when the server does not run.
+`stop` starts it, so the card stays ours between sessions.
+`unhold` gives the card back completely.
+
+**A high load average on 1202b is not a reason for a slow page.**
+Measured: load average 44 on 128 cores, and the tunnel was still 52 ms.
+The 5-to-9-second delay came from the stale master connection above.
+Check the tunnel first. Do not blame the other users.
 
 **The bind addresses are different on purpose.**
 The remote server binds to `127.0.0.1`. The API has no authentication.
