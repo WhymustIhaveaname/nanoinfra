@@ -90,10 +90,18 @@ cd gamengen
 .venv/bin/python playtest.py      # scripted play, makes an MP4
 ```
 
-`browsertest.py` opens the page. It sets the input state and calls the step loop.
+`browsertest.py` opens the page and makes about 100 checks.
 It checks the button map, the model switch, the load progress, and the tab layout.
-It does not dispatch real keyboard or mouse events. The pointer-lock and key
-handlers stay untested.
+
+Sections 6k to 6n dispatch real keyboard and mouse events. They lock the pointer,
+hold keys down, and release them. Use these sections for all input behavior.
+Do not test input by an assignment to `G.keys`. An assignment to `G.keys` hides
+these three defects, which occurred:
+
+- A key that the model does not support sent 40 requests each second.
+- The speed control had no effect, because each mouse move event started a
+  second loop.
+- The recording did not become empty at a new game.
 
 `playtest.py` sends a fixed action sequence. It saves the frames to a video.
 Look at the video. The model must respond to each action.

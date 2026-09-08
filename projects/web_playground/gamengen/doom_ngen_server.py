@@ -375,7 +375,8 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path.startswith("/step"):
             s = _STATE.get(str(req.get("id")))
             if s is None:
-                return self._send({"error": "session expired", "reason": "session"}, 410)
+                return self._send({"error": "session expired", "reason": "session",
+                                   "model": _CUR["id"]}, 410)
             if "buttons" in req:
                 act = resolve_action(eng, req["buttons"])
                 if act is None:
@@ -408,7 +409,7 @@ class Handler(BaseHTTPRequestHandler):
             except RuntimeError as e:
                 # reason 让前端知道要不要连玩家的录制一起丢掉
                 return self._send({"error": "模型已切换，这局作废",
-                                   "reason": str(e)}, 410)
+                                   "reason": str(e), "model": _CUR["id"]}, 410)
             self._send({"frame": b64(png), "steps": s["steps"],
                         "ms": round(dt * 1000, 1),
                         "action": table_of(eng)[int(req.get("action", 0))] or "NOOP",
@@ -418,7 +419,8 @@ class Handler(BaseHTTPRequestHandler):
             # 这局在种子 episode 里的下一个真实动作。给「重放参考轨迹」用。
             s = _STATE.get(str(req.get("id")))
             if s is None:
-                return self._send({"error": "session expired", "reason": "session"}, 410)
+                return self._send({"error": "session expired", "reason": "session",
+                                   "model": _CUR["id"]}, 410)
             i = s["src_at"] + s["steps"]
             if i >= eng.n_latent:
                 return self._send({"error": "episode 走完了"}, 410)

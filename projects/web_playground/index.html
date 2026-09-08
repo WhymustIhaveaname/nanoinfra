@@ -70,7 +70,8 @@
   .meta b { color: var(--fg); font-weight: 600; }
   .meta .row { margin-bottom: 3px; }
   .acts { font-family: ui-monospace, Menlo, monospace; font-size: 11px;
-          color: var(--dim); line-height: 1.9; margin-top: 8px; }
+          color: var(--dim); line-height: 1.9; margin-top: 8px;
+          display: flex; flex-wrap: wrap; gap: 3px; }
   .acts span { background: #1e222b; padding: 1px 4px; border-radius: 3px; margin-right: 3px; }
   #g-recacts span { cursor: pointer; }
   #g-recacts span:hover { outline: 1px solid var(--accent); }
@@ -101,20 +102,6 @@
              background: rgba(15,17,21,.82); color: var(--fg); font-size: 15px;
              border-radius: 4px; pointer-events: none; }
   .rel { position: relative; width: 640px; max-width: 100%; }
-  /* 窄屏：640px 的画面和按钮网格会把整页撑出横向滚动条，右边被切掉。
-     这几条让它们跟着视口缩，笔记本和手机都能用。 */
-  @media (max-width: 1000px) {
-    .gamecol, #g-pad, .rel, #screen, #overlay { width: 100%; max-width: 100%; }
-    .gamecol { flex: 1 1 100%; }
-    #screen { height: auto; aspect-ratio: 320 / 256; }
-    #overlay { height: 100%; }
-    .stats { flex: 1 1 100%; max-width: 100%; }
-  }
-  @media (max-width: 560px) {
-    #g-pad { grid-template-columns: repeat(2, 1fr); }
-    .padbtn[data-act="ATTACK"] { grid-column: span 2; }
-    main, header, #tabs, #subtabs, #controls { padding-left: 12px; padding-right: 12px; }
-  }
   /* 操作按钮：键盘之外的第二条路。不支持的动作自动禁用并标灰。 */
   #g-pad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px;
            width: 640px; margin-top: 10px; }
@@ -141,6 +128,26 @@
   .mono { font-family: ui-monospace, Menlo, monospace; font-size: 12px;
           color: var(--dim); }
   .bad { color: #f7768e; }
+  /* ===== 窄屏适配。必须放在最后：同优先级下后写的规则赢，
+     以前放在前面被 #g-pad { width: 640px } 直接盖掉。 ===== */
+  @media (max-width: 1000px) {
+    .gamecol, #g-pad, .rel, #screen, #overlay { width: 100%; max-width: 640px; }
+    .gamecol { flex: 1 1 100%; }
+    #screen { height: auto; aspect-ratio: 320 / 256; }
+    #overlay { height: 100%; }
+    .stats { flex: 1 1 100%; max-width: 100%; }
+  }
+  @media (max-width: 1000px) {
+    .clip { flex-wrap: wrap; }
+    .clip .panel, .clip img, .clip video { max-width: 100%; height: auto; }
+    .meta { min-width: 0; }
+    .vidbox video { width: 100% !important; max-width: 320px; }
+  }
+  @media (max-width: 560px) {
+    #g-pad { grid-template-columns: repeat(2, 1fr); }
+    .padbtn[data-act="ATTACK"] { grid-column: span 2; }
+    main, header, #tabs, #subtabs, #controls { padding-left: 12px; padding-right: 12px; }
+  }
 </style>
 </head>
 <body>
@@ -272,7 +279,7 @@ const G = {
   // 本局回放：每帧存下画面和当时的动作。上限 600 帧（约 2 分钟），
   // 超了就丢最老的——一帧 PNG 约 100KB，不设上限会把浏览器内存吃光。
   rec: [], recMax: 600, dropped: 0,   // dropped: 因超上限被丢掉的帧数
-  scrubbing: false, replaying: false, nextDelay: 0,
+  scrubbing: false, replaying: false, nextDelay: 0, timer: null,
   stale: false,      // 下拉框选的和 loaded 不一致 —— 此时禁止游玩
 };
 
@@ -312,16 +319,24 @@ function showRecFrame(i) {
   for (const el of $('g-recacts').children) {
     const on = +el.dataset.i === i;
     el.className = on ? 'now' : '';
-    if (on) el.scrollIntoView({block: 'nearest'});
+    // 只滚历史条自己。scrollIntoView 会连带滚动 document，
+    // 回放时每帧滚一次，整页被死死按住，用户拉都拉不回来。
+    if (on) {
+      const box = el.parentElement;
+      if (el.offsetLeft < box.scrollLeft) box.scrollLeft = el.offsetLeft;
+      else if (el.offsetLeft + el.offsetWidth > box.scrollLeft + box.clientWidth)
+        box.scrollLeft = el.offsetLeft + el.offsetWidth - box.clientWidth;
+    }
   }
   $('g-recact').textContent = `动作 ${r.action} · ${r.ms} ms`;
 }
 
 function startReplay() {
   if (!G.rec.length) return;
-  resetInput();        // 回放期间攒下的转向/开火不该在结束后突然打出来
+  resetInput();          // 回放期间攒下的转向/开火不该在结束后突然打出来
   // 回放期间禁止再生成新帧，否则实时画面会和回放抢同一块 canvas
   G.replaying = true;
+  syncPadEnabled();
   $('g-replay').textContent = '⏹ 停止回放';
   let i = 0;
   G.replayTimer = setInterval(() => {
@@ -335,6 +350,7 @@ function stopReplay() {
   G.replayTimer = null;
   G.replaying = false;
   resetInput();
+  syncPadEnabled();
   const b = $('g-replay');
   if (b) b.textContent = '▶ 回放本局';
   if (b) updateRecUI();          // 否则计数停在「37 / 600」直到下一帧生成
@@ -417,7 +433,8 @@ function hasInput() {
   if (G.repeatLeft > 0 && G.heldButtons) return true;
   // 空格只在模型确实有「不动」时才算输入：否则在没有 NOOP 的模型上会不停
   // 发请求、不停被 422 拒绝，白烧 GPU。
-  for (const k of ['w', 'a', 's', 'd']) if (G.keys.has(k)) return true;
+  for (const k of ['w', 'a', 'd']) if (G.keys.has(k)) return true;
+  if (G.keys.has('s') && G.hasBack) return true;   // 没有后退的模型不能让 S 发请求
   if (G.keys.has(' ') && G.hasNoop) return true;
   if (G.padShots > 0) return true;           // 点了操作按钮
   return G.fire || Math.abs(liveDx()) > TURN_DEADZONE;
@@ -438,7 +455,19 @@ function resetInput() {
   G.dx = 0; G.dxAt = 0; G.fire = false;
   G.padShots = 0; G.padButtons = [];
   G.repeatLeft = 0; G.heldButtons = null;
+  clearTimeout(G.timer); G.timer = null;      // 排着的下一轮也得撤，否则还会再走一帧
 }
+
+// 全页只允许有一条循环链。以前每个 keydown / mousemove 都直接调 gameLoop()，
+// 而循环自己又在 finally 里 setTimeout 续一条 —— 于是链会越积越多，各自按
+// nextDelay 排队，合起来的实际帧率是链数的倍数，慢放形同虚设（实测 0.25 倍速
+// 排的是 630ms，实际却 216ms 一帧，因为同时跑着 3 条链）。
+function schedule(ms) {
+  clearTimeout(G.timer);
+  G.timer = setTimeout(() => { G.timer = null; gameLoop(); }, ms || 0);
+}
+// 外部输入触发。正在跑的那一轮结束后会自己续，这里再排一条就是多的。
+function kick() { if (!G.stepping && !G.timer) schedule(0); }
 
 async function gameLoop() {
   if (!G.locked || G.stepping || G.stale || G.replaying) return;
@@ -446,6 +475,7 @@ async function gameLoop() {
   // stepping 这个标志位必须由 finally 统一释放。以前在每条 return 分支里手动清，
   // 漏掉一条就永久卡死——表现正是「按键大部分时候没反应，偶尔有反应」。
   G.stepping = true;
+  G.scrubbing = false;      // 又开始玩了，进度条回到跟随最新帧
   let again = false;
   try {
     if (!G.sid) { await gameNew(); if (!G.sid) return; }
@@ -465,7 +495,11 @@ async function gameLoop() {
     if (r.status === 410) {                // session 失效，或模型被换掉
       const d0 = await r.json().catch(() => null);
       // 换了模型，历史就不再是同一个世界的了，这一种要清；纯 session 过期则留着。
-      const modelChanged = G.sid && d0 && d0.reason === 'model';
+      // 不能只看 reason：换模型时服务端会把 session 一并清掉，前端收到的是
+      // 「session expired」，所以还要拿 410 里带回的当前模型 id 比一比。
+      const modelChanged = d0 && (d0.reason === 'model'
+                                  || (d0.model && d0.model !== G.loaded));
+      if (modelChanged) probeServer();   // 界面上的模型名也得跟着换
       G.sid = null;
       G.repeatLeft = 0; G.heldButtons = null;
       await gameNew(!modelChanged);
@@ -508,7 +542,7 @@ async function gameLoop() {
     G.repeatLeft = 0; G.heldButtons = null;
   } finally {
     G.stepping = false;                    // 无论走哪条路都要放开
-    if (again) setTimeout(gameLoop, G.nextDelay || 0);
+    if (again) schedule(G.nextDelay || 0);
   }
 }
 
@@ -518,8 +552,8 @@ function initGame() {
   document.addEventListener('pointerlockchange', () => {
     const locked = document.pointerLockElement === cv;
     cv.classList.toggle('locked', locked);
-    $('overlay').style.display = locked ? 'none' : 'flex';
     G.locked = locked;
+    syncOverlay();
     if (!locked) resetInput();          // 解锁时清干净，否则按着的键会一直留着
   });
   // Alt-Tab / 切标签页时 keyup 不会派发给页面，按着的键会永久卡在 G.keys 里，
@@ -527,22 +561,22 @@ function initGame() {
   addEventListener('blur', resetInput);
   document.addEventListener('visibilitychange', () => { if (document.hidden) resetInput(); });
   document.addEventListener('mousemove', e => {
-    if (document.pointerLockElement === cv) {
-      G.dx += e.movementX; G.dxAt = performance.now(); gameLoop();
-    }
+    if (document.pointerLockElement !== cv || !e.movementX) return;
+    G.dx += e.movementX; G.dxAt = performance.now(); kick();
   });
   document.addEventListener('mousedown', e => {
-    if (document.pointerLockElement === cv && e.button === 0) { G.fire = true; gameLoop(); }
+    if (document.pointerLockElement === cv && e.button === 0) { G.fire = true; kick(); }
   });
   addEventListener('keydown', e => {
     if (document.pointerLockElement === cv) {
+      if (e.repeat) { e.preventDefault(); return; }   // 自动重复会绕开慢放节流
       const k = e.key.toLowerCase();
       G.keys.add(k);
       if (['w','a','s','d',' '].includes(k)) e.preventDefault();
       // 按了这个模型没有的键就说一声。静悄悄不响应，用户只会以为坏了。
       if (k === ' ' && !G.hasNoop) notSupported('空格（无动作）');
       if (k === 's'  && !G.hasBack) notSupported('S（后退）');
-      gameLoop();
+      kick();
     }
   });
   addEventListener('keyup', e => {
@@ -555,10 +589,9 @@ function initGame() {
   });
   $('g-replay').onclick = () => G.replaying ? stopReplay() : startReplay();
   $('g-scrub').oninput = e => { G.scrubbing = true; stopReplay(); showRecFrame(+e.target.value); };
-  $('g-scrub').onchange = () => { G.scrubbing = false; };
   $('g-recacts').onclick = e => {
     const i = e.target.dataset && e.target.dataset.i;
-    if (i !== undefined) { stopReplay(); showRecFrame(+i); }
+    if (i !== undefined) { stopReplay(); G.scrubbing = true; showRecFrame(+i); }
   };
   // 按钮点一下就发一组动作，和键盘走同一条路径（同样重复 REPEAT 帧）
   for (const b of document.querySelectorAll('.padbtn')) {
@@ -568,15 +601,15 @@ function initGame() {
       // 用按钮玩不需要锁鼠标，但遮罩得撤掉——它只在 pointerlockchange 里撤，
       // 而点按钮不会触发那个事件，结果就是画面一直被半透明遮罩盖着。
       G.locked = true;
-      $('overlay').style.display = 'none';
+      syncOverlay();
       G.padButtons = act ? [act] : [];
       // 1 而不是 REPEAT：padShots 是「还要被 pickButtons 读几次」，
       // 而每读一次本身就会重复 REPEAT 帧。设成 REPEAT 会变成 4×4=16 帧。
       G.padShots = 1;
-      gameLoop();
+      kick();
     };
   }
-  $('g-new').onclick = gameNew;
+  $('g-new').onclick = () => gameNew();
   $('g-loadmodel').onclick = loadModel;
   $('g-model').onchange = () => { showModelNote(); syncModelState(); };
   $('g-speed').onchange = e => { G.speed = +e.target.value; };
@@ -597,6 +630,24 @@ function fillModels(list, loaded) {
 // 下拉框选的 ≠ 显存里装的，就把游玩彻底掐掉。
 // 不掐的话会出现「界面写着 A、实际在跑 B」——玩家看到的画面和他以为的模型对不上，
 // 比慢、比丑都严重，因为它让人得出错误结论。
+// 遮罩显不显示只由这里决定。以前 padbtn 和 pointerlockchange 各写各的，
+// 结果用按钮玩过之后遮罩被写死成 none，切模型的警告就再也看不见了。
+// 不能用的时候就让按钮看起来不能用。静默吞掉点击最招人烦。
+function syncPadEnabled() {
+  for (const b of document.querySelectorAll('.padbtn')) {
+    const a = b.dataset.act;
+    const noAct = (a === 'BACK' && !G.hasBack) || (a === '' && !G.hasNoop);
+    b.disabled = noAct || G.stale || G.replaying;
+    b.title = noAct ? '当前模型没有这个动作'
+            : G.stale ? '先点「载入」' : G.replaying ? '回放中' : '';
+  }
+}
+
+function syncOverlay() {
+  document.getElementById('overlay').style.display =
+    (G.locked && !G.stale) ? 'none' : 'flex';
+}
+
 function syncModelState() {
   const sel = document.getElementById('g-model');
   // 判据必须含「服务端没有已载入模型」这一种：以前写成 !!G.loaded && ...，
@@ -610,6 +661,8 @@ function syncModelState() {
   btn.style.color = G.stale ? 'var(--warn)' : '';
   btn.style.opacity = G.stale ? '' : '.5';
   btn.style.cursor = G.stale ? '' : 'default';
+  syncOverlay();
+  syncPadEnabled();
   document.getElementById('g-stale').textContent =
     G.stale ? '↑ 选了别的模型，点「载入」后才能玩' : '';
   const run = document.getElementById('g-running');
@@ -674,7 +727,17 @@ async function loadModel() {
 
 function probeServer() {
   const $ = id => document.getElementById(id);
+  probeServer._tries = (probeServer._tries || 0) + 1;
   api(GAME_API + '/info', null, 8000).then(r => r.json()).then(d => {
+    // 服务端还在载模型：这份 /info 没有 gpu/steps/buffer，别拿它去填界面，
+    // 否则会写出 "undefined 步去噪" 并把按键表全标成「该模型没有」，且再也不刷新。
+    if (d.loading || !d.loaded) {
+      fillModels(d.models, null);
+      $('g-gpu').textContent = '推理服务正在载入模型…';
+      $('g-err').textContent = '';
+      return setTimeout(probeServer, 2000);
+    }
+    probeServer._tries = 0;
     fillModels(d.models, d.loaded);
     // 按键表随模型变：a16z 那 18 个动作里没有 BACK 也没有 NOOP
     const acts = d.actions || [];
@@ -689,11 +752,6 @@ function probeServer() {
     }
     G.hasNoop = !!d.has_noop;
     G.hasBack = (d.actions || []).some(a => a.split('+').includes('BACK'));
-    for (const b of document.querySelectorAll('.padbtn')) {
-      const a = b.dataset.act;
-      b.disabled = (a === 'BACK' && !G.hasBack) || (a === '' && !G.hasNoop);
-      b.title = b.disabled ? '当前模型没有这个动作' : '';
-    }
     G.loaded = d.loaded;
     G.loadedName = (MODELS.find(m => m.id === d.loaded) || {}).name || d.loaded;
     $('g-gpu').textContent =
@@ -707,7 +765,10 @@ function probeServer() {
     gameNew();
   }).catch(() => {
     $('g-gpu').textContent = '推理服务未启动';
-    $('g-err').innerHTML = `<span class="bad">连不上 ${GAME_API}</span>`;
+    $('g-err').innerHTML = `<span class="bad">连不上 ${GAME_API}，重试中…</span>`;
+    // 一次连不上就永久放弃的话，服务晚起来几秒页面就废了，只能刷新。
+    // 退避重试，最多约 1 分钟。
+    if (probeServer._tries < 12) setTimeout(probeServer, 5000);
   });
 }
 
@@ -836,8 +897,11 @@ Promise.all([
   function show(i) {
     const isGame = sections[i].isGame;
     sections.forEach((s, j) => {
-      s.sec.style.display = (i === j) ? '' : 'none';
-      if (j > 0) s.btn.className = (i === j) ? 'on' : '';   // 二级按钮
+      const on = (i === j);
+      s.sec.style.display = on ? '' : 'none';
+      if (j > 0) s.btn.className = on ? 'on' : '';   // 二级按钮
+      // 切走的那页里的 <video> 带 loop，不暂停就一直在后台解码
+      if (!on) for (const v of s.sec.querySelectorAll('video')) v.pause();
     });
     playBtn.className = isGame ? 'on' : '';
     dataBtn.className = isGame ? '' : 'on';

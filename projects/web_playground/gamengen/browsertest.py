@@ -261,8 +261,94 @@ def main():
         pg.set_viewport_size({"width": 1500, "height": 1000})
         pg.wait_for_timeout(300)
 
+        print("6i2) 数据预览页窄屏也不许溢出")
+        pg.click("#tabs button:nth-child(2)"); pg.wait_for_timeout(600)
+        for w in (1000, 760, 560):
+            pg.set_viewport_size({"width": w, "height": 900}); pg.wait_for_timeout(400)
+            sw = pg.evaluate("() => document.documentElement.scrollWidth")
+            check(f"数据页视口 {w}px 无横向滚动条", sw <= w + 2, f"内容宽 {sw}")
+        pg.set_viewport_size({"width": 1500, "height": 1000})
+        pg.click("#tabs button:nth-child(1)"); pg.wait_for_timeout(400)
+
         print("6j) 请求都带超时，不会永久挂死")
         check("有 AbortController 超时封装", pg.evaluate("() => typeof api === 'function'"))
+
+        print("6k) 真实键鼠（这一段不再伪造 G.keys，全走浏览器事件）")
+        unlock = lambda: (pg.evaluate("() => document.exitPointerLock()"),
+                          pg.wait_for_timeout(300))
+        def lock():
+            pg.click("#screen"); pg.wait_for_timeout(700)
+            pg.evaluate("() => resetInput()"); pg.wait_for_timeout(300)
+
+        steps = []
+        pg.on("response", lambda r: steps.append(r.status) if "/step" in r.url else None)
+
+        lock()
+        check("点画面能锁定指针", pg.evaluate("() => G.locked"))
+        n0 = pg.evaluate("() => G.rec.length")
+        pg.keyboard.down("w"); pg.wait_for_timeout(2500)
+        pg.keyboard.up("w"); pg.wait_for_timeout(1500)
+        check("真按 W 有帧生成", pg.evaluate("() => G.rec.length") > n0)
+        check("松开 W 就定格",
+              pg.evaluate("() => G.rec.length") ==
+              (pg.wait_for_timeout(1500) or pg.evaluate("() => G.rec.length")))
+
+        # 按住一个当前模型没有的键，曾经会按键盘自动重复的速率狂发 422
+        noback = not pg.evaluate("() => G.hasBack")
+        if noback:
+            steps.clear()
+            pg.keyboard.down("s"); pg.wait_for_timeout(3000); pg.keyboard.up("s")
+            pg.wait_for_timeout(500)
+            check("按住模型没有的键不发请求", len(steps) == 0, f"发了 {len(steps)} 个")
+
+        print("6l) 慢放对真实按键也要生效（曾被 mousemove 冲垮）")
+        rate = {}
+        for sp in ("1", "0.25"):
+            unlock(); pg.select_option("#g-speed", sp); lock()
+            pg.evaluate("() => { G.rec = []; }")
+            pg.keyboard.down("w"); pg.wait_for_timeout(6000)
+            pg.keyboard.up("w"); pg.wait_for_timeout(1500)
+            rate[sp] = pg.evaluate("() => G.rec.length")
+        check("0.25 倍速确实慢约四倍",
+              0.15 <= rate["0.25"] / max(rate["1"], 1) <= 0.40,
+              f"全速 {rate['1']} 帧 vs 四分之一速 {rate['0.25']} 帧")
+        unlock(); pg.select_option("#g-speed", "1")
+
+        print("6m) 新开一局要真的清空录制")
+        lock(); pg.keyboard.down("w"); pg.wait_for_timeout(2500)
+        pg.keyboard.up("w"); pg.wait_for_timeout(1500)
+        check("清空前有帧", pg.evaluate("() => G.rec.length") > 0)
+        unlock(); pg.click("#g-new"); pg.wait_for_timeout(2500)
+        # 曾经写成 onclick = gameNew，MouseEvent 被当成 keepRec 传进去，恒为真
+        check("新开一局后录制清零", pg.evaluate("() => G.rec.length") == 0,
+              f"仍有 {pg.evaluate('() => G.rec.length')} 帧")
+        check("计数条复位", pg.locator("#g-recact").inner_text().strip() == "还没有帧",
+              pg.locator("#g-recact").inner_text())
+        check("回放按钮置灰", pg.evaluate("() => document.getElementById('g-replay').disabled"))
+
+        print("6m2) 看历史帧时新帧不许把进度条抢回末尾")
+        lock(); pg.keyboard.down("w"); pg.wait_for_timeout(2500)
+        pg.keyboard.up("w"); pg.wait_for_timeout(1500); unlock()
+        pg.evaluate("() => { stopReplay(); G.scrubbing = true; showRecFrame(1); }")
+        v1 = pg.evaluate("() => document.getElementById('g-scrub').value")
+        pg.evaluate("() => updateRecUI()")
+        check("停在选中的那一帧",
+              pg.evaluate("() => document.getElementById('g-scrub').value") == v1, v1)
+        lock(); pg.keyboard.down("w"); pg.wait_for_timeout(1500)
+        pg.keyboard.up("w"); pg.wait_for_timeout(1200)
+        check("又开始玩之后进度条重新跟随最新帧",
+              not pg.evaluate("() => G.scrubbing"))
+        unlock()
+
+        print("6n) 回放不许把整页滚走")
+        lock(); pg.keyboard.down("w"); pg.wait_for_timeout(2500)
+        pg.keyboard.up("w"); pg.wait_for_timeout(1500); unlock()
+        pg.click("#g-replay")            # 先点（Playwright 会为点击自行滚动）
+        pg.evaluate("() => window.scrollTo(0, 0)")
+        pg.wait_for_timeout(1500)
+        check("回放期间页面不被拽走", pg.evaluate("() => window.scrollY") == 0,
+              f"scrollY={pg.evaluate('() => window.scrollY')}")
+        pg.evaluate("() => stopReplay()"); pg.wait_for_timeout(300)
 
         print("7) 三个模型可切换")
         opts = pg.eval_on_selector_all("#g-model option", "els => els.map(e => e.value)")
