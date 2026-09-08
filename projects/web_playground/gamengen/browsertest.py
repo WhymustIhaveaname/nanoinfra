@@ -86,6 +86,13 @@ def main():
         pg.wait_for_timeout(2500)
         check("重新问到之后恢复可玩", not pg.evaluate("() => G.stale"))
 
+        print("3c) 没有键盘之后画面上不该有「点击画面开始」")
+        disp = lambda: pg.evaluate(
+            "() => getComputedStyle(document.getElementById('overlay')).display")
+        check("刚打开画面上没有遮罩", disp() == "none", disp())
+        check("遮罩文字里没有「点击画面开始」",
+              "点击画面" not in pg.locator("#overlay").inner_text())
+
         print("4) 点操作按钮出帧")
         # 输入只有一条路：点按钮。键盘和鼠标转向已从页面整个移除。
         REP = 4          # 一次点击 = 4 帧
@@ -176,6 +183,7 @@ def main():
               pg.locator("#g-runname").inner_text() == MODEL_NAMES[cur0],
               f"确认框={pg.locator('#g-runname').inner_text()} 期望={MODEL_NAMES[cur0]}")
         check("确认框变成告警态", "stale" in (pg.get_attribute("#g-running","class") or ""))
+        check("选了别的模型时遮罩盖住画面", disp() == "flex", disp())
         before_n = int(pg.locator("#g-steps").inner_text())
         pg.click('.padbtn[data-act="FWD"]', force=True)
         pg.wait_for_timeout(2500)
@@ -189,6 +197,7 @@ def main():
         check("按钮显示「已载入」", pg.locator("#g-loadmodel").inner_text() == "已载入",
               pg.locator("#g-loadmodel").inner_text())
         check("确认框恢复正常态", "stale" not in (pg.get_attribute("#g-running","class") or ""))
+        check("选回来后遮罩消失", disp() == "none", disp())
 
         print("6c) 模型缺哪些动作要写清楚，按钮要置灰")
         missing = pg.locator("#g-missing").inner_text()

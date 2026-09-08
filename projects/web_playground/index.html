@@ -177,7 +177,7 @@
 
         <div class="rel">
           <canvas id="screen" width="320" height="256"></canvas>
-          <div id="overlay">点下面的按钮走一步</div>
+          <div id="overlay"></div>
         </div>
         <div id="g-pad">
           <button class="padbtn" data-act="TLEFT">↺ 左转</button>
@@ -246,7 +246,6 @@ async function api(path, opts, ms) {
 const GAME_API = `http://${location.hostname}:25677`;
 const G = {
   sid: null, stepping: false, steps: 0,
-  started: false,    // 点过一次按钮之后才把「点下面的按钮走一步」的提示撤掉
   times: [],
   loaded: null,      // 显存里真正装着的模型 id
   pool: [],          // 常驻在显存里的模型 —— 在池子里的切换是瞬时的
@@ -495,8 +494,6 @@ function initGame() {
       // 点完就丢掉焦点：按钮保留焦点的话，之后敲空格或回车会把它再激活一次，
       // 等于键盘又能玩了 —— 而键盘是明确要去掉的。
       b.blur();
-      G.started = true;
-      syncOverlay();
       G.padButtons = b.dataset.act ? [b.dataset.act] : [];
       // 1 而不是 REPEAT：padShots 是「还要被 pickButtons 读几次」，
       // 而每读一次本身就会重复 REPEAT 帧。设成 REPEAT 会变成 4×4=16 帧。
@@ -537,9 +534,10 @@ function syncPadEnabled() {
   }
 }
 
+// 遮罩只有一个用途：选了别的模型还没切换时盖住画面，提醒先切。
+// 没有键盘之后不再需要「点击画面开始」那一层。
 function syncOverlay() {
-  document.getElementById('overlay').style.display =
-    (G.started && !G.stale) ? 'none' : 'flex';
+  document.getElementById('overlay').style.display = G.stale ? 'flex' : 'none';
 }
 
 function syncModelState() {
@@ -567,13 +565,8 @@ function syncModelState() {
   document.getElementById('g-runname').textContent = G.loadedName || '—';
   run.className = G.stale ? 'stale' : '';
   run.firstChild.textContent = G.stale ? '仍在玩（未切换）：' : '当前正在玩：';
-  if (G.stale) {
-    document.exitPointerLock();
-    document.getElementById('overlay').textContent = '先点「载入」把选中的模型装进显存';
-  } else {
-    document.getElementById('overlay').textContent =
-      '点击画面开始 · 按键才生成，松手定格 · Esc 退出';
-  }
+  document.getElementById('overlay').textContent =
+    resident ? '先点「切换」' : '先点「载入」把选中的模型装进显存';
 }
 
 function showModelNote() {
