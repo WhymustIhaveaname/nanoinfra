@@ -108,7 +108,21 @@ EOS
   sleep 5
   curl -s -m 20 "http://127.0.0.1:$PORT/info" \
     | python3 -c "import json,sys; d=json.load(sys.stdin); print('  通了:', d['gpu'], '|', d['bench']['mean_ms'], 'ms/帧')" \
-    || echo "  隧道没通，看 outputs/gamengen/tunnel.log"
+    || { echo "  隧道没通，看 outputs/gamengen/tunnel.log"; exit 1; }
+  # 隧道健康检查。一条久开的隧道会劣化：实测新隧道空转 41ms，而连开数小时、
+  # 被反复 kill 重连过的老隧道要 830ms——足以把 4.9 fps 拖成 1 fps，
+  # 而且症状看起来像「远端 GPU 慢」，极易误判。所以每次 start 都量一下。
+  echo -n "  隧道空转延迟: "
+  python3 - <<'PYEOF'
+import http.client, time
+c = http.client.HTTPConnection('127.0.0.1', 25677, timeout=30)
+ts = []
+for _ in range(6):
+    t0 = time.time(); c.request('GET', '/status'); r = c.getresponse(); r.read()
+    ts.append((time.time() - t0) * 1000)
+ms = sorted(ts)[len(ts) // 2]
+print(f"{ms:.0f} ms" + ("" if ms < 150 else "  ← 偏高！隧道可能已劣化，重跑 stop 再 start"))
+PYEOF
   ;;
 
 stop)
