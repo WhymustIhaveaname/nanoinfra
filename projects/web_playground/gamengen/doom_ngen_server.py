@@ -53,7 +53,10 @@ def set_buffer_size(n):
     in_channels 反推：4*(n+1)，260 -> 64，40 -> 9）。不改的话换模型必报
     「expected input to have 40 channels, but got 260」。
     run_inference 是 `from config_sd import BUFFER_SIZE`，名字已经绑进它自己的
-    命名空间，所以三个模块都要改。同一时刻只有一个模型在显存里，全局改是安全的。
+    命名空间，所以三个模块都要改。
+
+    注意：三个模型现在是同时驻留的，所以「载入时设一次」不够——那样全局值会是
+    最后载入的那个模型的。必须在每次 new_session / step 之前绑成当前引擎的值。
     """
     for m in (config_sd, run_inference, upstream_model):
         m.BUFFER_SIZE = n
@@ -116,6 +119,9 @@ def resolve_action(eng, buttons):
 _STATE = {}                     # sid -> session
 _MODELS = {}                    # id -> 模型清单里的一条
 _CUR = {"id": None, "engine": None, "bench": None, "load_ms": None}
+# 显存够（一张 A6000 47 GB，一个引擎 4.3 GB），三个模型全部常驻，
+# 换模型就只是改一个指针，不再重新载权重。
+_POOL = {}      # mid -> {"engine", "bench", "load_ms"}
 _IDS = itertools.count(1)       # session id：必须单调，用 len(_STATE) 会重号
 
 # 载入进度。/status 不排队进 GPU 线程，所以 GPU 忙着的时候照样读得到——
@@ -236,6 +242,7 @@ class Engine:
 
     def new_session(self, seed=None):
         """从种子 episode 里随机取 64 帧真实 latent 当开局上下文。"""
+        set_buffer_size(self.buffer)     # 三个模型同时驻留，全局值必须每次重绑
         if seed is not None:
             random.seed(seed); torch.manual_seed(seed); np.random.seed(seed)
         start = random.randint(0, self.n_latent - self.buffer - 1)
@@ -273,6 +280,7 @@ class Engine:
         noise 传了就覆盖启动时的噪声档（0 最小、9 最大，上游默认 9）。
         这是条件增强的档位，告诉模型「你的上下文有多脏」，会明显影响漂移速度。
         """
+        set_buffer_size(self.buffer)     # 同上：masao 是 64 帧、arnaud 是 9 帧
         t0 = time.time()
         self.last_shapes = {"ctx": tuple(s["ctx"].shape),
                             "acts": tuple(s["acts"].shape)}
@@ -366,6 +374,7 @@ class Handler(BaseHTTPRequestHandler):
                                 if eng.device.type == "cuda" else "cpu"),
                         "buffer": eng.buffer, "res": "320x256",
                         "bench": _CUR["bench"], "loaded": _CUR["id"],
+                        "pool": sorted(_POOL),   # 显存里常驻着哪几个
                         "load_ms": _CUR["load_ms"],
                         "models": self.server.model_list})
         elif self.path.startswith("/status"):
@@ -509,11 +518,18 @@ def warmup(eng):
 
 
 def load_model_by_id(mid, args, rebench=False):
-    """换模型：先把旧的从显存里彻底清掉，再载新的。
+    """把 mid 设为当前模型。已经在池子里就是改个指针，否则先载进池子。
 
-    不同时驻留多个：16GB 卡上每个约 4GB，留两个就没余量给推理时的中间张量了。
+    三个模型同时驻留（47 GB 的卡，一个引擎 4.3 GB），所以换模型不再重新载权重。
     换完之后所有旧 session 作废——它们的上下文是用旧 VAE 编出来的，混着用没意义。
     """
+    if mid in _POOL and not rebench:
+        _STATE.clear()                       # 旧 session 的上下文属于别的模型
+        _CUR.update(id=mid, **_POOL[mid])
+        progress("")
+        print(f"[pool] 切到 {mid}（已常驻，未重载）", flush=True)
+        return _CUR
+
     m = _MODELS[mid]
     base = Path(args.base)
     t0 = time.time()
@@ -522,13 +538,7 @@ def load_model_by_id(mid, args, rebench=False):
     if freed:
         print(f"[ballast] 让出 {freed:.1f} GiB", flush=True)
     _CUR["id"] = None          # 载入失败时不要继续声称旧模型还在
-    if _CUR["engine"] is not None:
-        _CUR["engine"] = None
-        _STATE.clear()
-        import gc
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+    _STATE.clear()
     lat = Path(args.latents) if args.latents else \
           next(iter(sorted((base / "latents").rglob("*.pt"))))
     progress("载入权重")
@@ -559,6 +569,7 @@ def load_model_by_id(mid, args, rebench=False):
         progress("预热", 0, WARMUP)
         warmup(eng)
         bench = None
+    _POOL[mid] = {"engine": eng, "bench": bench, "load_ms": load_ms}
     _CUR.update(id=mid, engine=eng, load_ms=load_ms, bench=bench)
     # 载完（含预热／测速的峰值都过去了）再把剩下的显存占回来
     got = ballast_grab()
@@ -610,6 +621,8 @@ def main():
     ap.add_argument("--bench", type=int, default=20, help="启动时测多少帧，0=不测")
     # 共享机器上把整张卡占住，别让人挤进来抢 SM。留给自己的瞬时峰值余量（GiB）；
     # 设 0 = 不占卡。换模型和推理 OOM 时会自动让开，所以这个数不用留很大。
+    ap.add_argument("--no-preload-all", dest="preload_all", action="store_false",
+                    help="只载一个模型（省显存）；默认把清单里的全部预载进显存")
     ap.add_argument("--hold-leave", type=float, default=1.5,
                     help="占满整张卡，只留这么多 GiB 给自己的峰值；0=不占卡")
     a = ap.parse_args()
@@ -629,8 +642,17 @@ def main():
     srv.args = a
     srv.model_list = [{k: m[k] for k in ("id", "name", "note", "repo", "github")} for m in listed]
     first = a.model or listed[0]["id"]
-    print(f"[models] 可用 {[m['id'] for m in listed]}，先载 {first}", flush=True)
-    run_on_gpu(lambda: load_model_by_id(first, a), timeout=900)
+    # 显存够就全部预载：换模型从「重载权重 + 预热」变成改一个指针。
+    # 先载别的、最后载 first，这样 first 是收工时的当前模型。
+    order = ([m["id"] for m in listed if m["id"] != first] + [first]
+             if a.preload_all else [first])
+    print(f"[models] 可用 {[m['id'] for m in listed]}，预载 {order}", flush=True)
+    for mid in order:
+        run_on_gpu(lambda mid=mid: load_model_by_id(mid, a), timeout=900)
+    if len(order) > 1:
+        free, total = torch.cuda.mem_get_info()
+        print(f"[pool] {len(order)} 个模型常驻，卡上剩 "
+              f"{free / GiB:.1f}/{total / GiB:.1f} GiB", flush=True)
     print(f"[serve] http://{a.bind}:{a.port}  steps={a.steps}", flush=True)
     srv.serve_forever()
 

@@ -72,6 +72,20 @@ def main():
         check("canvas 上有画面（非全黑）", not blank)
         pg.locator("#game").screenshot(path=f"{a.shots}/browser_1_game.png")
 
+        print("3b) 连不上后端时不许出帧")
+        blocked = pg.evaluate("""async () => {
+            const keep = window.GAME_API_probe = G.loaded;
+            G.loaded = null; G.pool = []; syncModelState();
+            const stale = G.stale;
+            const disabled = document.querySelector('.padbtn[data-act="FWD"]').disabled;
+            return {stale, disabled};
+        }""")
+        check("不知道装的是哪个模型时禁止游玩", blocked["stale"], str(blocked))
+        check("此时动作按钮也置灰", blocked["disabled"], str(blocked))
+        pg.evaluate("() => probeServer()")
+        pg.wait_for_timeout(2500)
+        check("重新问到之后恢复可玩", not pg.evaluate("() => G.stale"))
+
         print("4) 点操作按钮出帧")
         # 输入只有一条路：点按钮。键盘和鼠标转向已从页面整个移除。
         REP = 4          # 一次点击 = 4 帧
@@ -156,8 +170,8 @@ def main():
                   if o != cur0][0]
         pg.select_option("#g-model", other0)
         pg.wait_for_timeout(400)
-        check("有醒目提示", "载入" in pg.locator("#g-stale").inner_text(),
-              pg.locator("#g-stale").inner_text())
+        stale_txt = pg.locator("#g-stale").inner_text()
+        check("有醒目提示", "载入" in stale_txt or "切换" in stale_txt, stale_txt)
         check("确认框仍写着实际在跑的那个",
               pg.locator("#g-runname").inner_text() == MODEL_NAMES[cur0],
               f"确认框={pg.locator('#g-runname').inner_text()} 期望={MODEL_NAMES[cur0]}")
@@ -330,6 +344,10 @@ def main():
         MODEL_NAMES.update(dict(zip(opts, pg.eval_on_selector_all(
             "#g-model option", "els => els.map(e => e.textContent)"))))
         check("模型下拉有三项", len(opts) == 3, str(opts))
+        pool = pg.evaluate("() => G.pool")
+        check("三个模型全部常驻显存", sorted(pool) == sorted(opts), f"常驻 {pool}")
+        check("标题里写了常驻数", "常驻显存" in pg.locator("#g-gpu").inner_text(),
+              pg.locator("#g-gpu").inner_text())
         cur_model = pg.input_value("#g-model")
         check("当前选中的就是已载入的", cur_model in opts, cur_model)
         check("有模型说明", len(pg.locator("#g-modelnote").inner_text()) > 10)
@@ -341,20 +359,17 @@ def main():
         pg.select_option("#g-model", other)
         pg.wait_for_timeout(300)
         check("选了别的模型后按钮才可点", not pg.is_disabled("#g-loadmodel"))
+        check("已常驻的模型按钮写「切换」而不是「载入」",
+              pg.locator("#g-loadmodel").inner_text() == "切换",
+              pg.locator("#g-loadmodel").inner_text())
+        import time as _t
+        t_first = _t.time()
         pg.click("#g-loadmodel")
-        seen_bar, ptext = False, ""
-        for _ in range(60):          # 轮询，别指望固定时刻正好抓到
-            if pg.locator("#g-progwrap").is_visible():
-                seen_bar = True
-                t = pg.locator("#g-progtext").inner_text()
-                if t.strip():
-                    ptext = t
-                    break
-            pg.wait_for_timeout(200)
-        check("载入时进度条可见", seen_bar)
-        check("进度条有阶段和秒数", ("预热" in ptext or "测速" in ptext
-              or "载入" in ptext or "腾显存" in ptext or "准备" in ptext) and "s" in ptext, ptext)
+        # 三个模型常驻之后，换模型只是改一个指针（实测 50–93ms），
+        # 进度条一闪而过，抓不到是正常的，不能再当成必现条件。
         pg.wait_for_function("() => document.getElementById('g-loadmodel').textContent !== '载入中…'", timeout=300000)
+        switch_ms = (_t.time() - t_first) * 1000
+        check("常驻模型切换在 3 秒内完成", switch_ms < 3000, f"耗时 {switch_ms:.0f} ms")
         pg.wait_for_timeout(2500)
         gpu2 = pg.locator("#g-gpu").inner_text()
         check(f"切到 {other} 成功", "失败" not in gpu2 and "上下文" in gpu2, gpu2)
@@ -370,16 +385,22 @@ def main():
             let s = 0; for (let i=0;i<d.length;i+=4) s += d[i]+d[i+1]+d[i+2];
             return s === 0; }""")
         check("换完模型自动开了新局（画面非全黑）", not blank2)
-        import time as _t
+        # 切完立刻能玩，而且发出的动作要是刚点的那个（上下文长度、动作表都换了模型）
+        n = tap("FWD")
+        sent = pg.evaluate(f"() => G.rec.slice({n}).map(r => r.action)")
+        check("切完模型立刻能玩且动作正确",
+              len(sent) == 4 and set(sent) == {"FWD"}, f"实际 {sent}")
         t_switch = _t.time()
         pg.select_option("#g-model", cur_model)
         pg.click("#g-loadmodel")
         pg.wait_for_function("() => document.getElementById('g-loadmodel').textContent !== '载入中…'", timeout=300000)
         pg.wait_for_timeout(2000)
         check("切回原模型", "上下文" in pg.locator("#g-gpu").inner_text())
-        # 基准结果落盘缓存了，第二次载入不该再测速——15 秒是宽松上界（实测 2-3 秒）
+        # 三个模型常驻，来回切都不重载权重。5 秒是宽松上界（实测不到 1 秒）
         dt = _t.time() - t_switch - 2.0
-        check("已测过的模型再载入走缓存（不重测速）", dt < 15, f"耗时 {dt:.1f}s")
+        check("来回切换不重载权重", dt < 5, f"耗时 {dt:.1f}s")
+        buf_back = pg.locator("#g-gpu").inner_text().split("上下文")[1].strip().split()[0]
+        check("切回来上下文帧数也跟着回去", buf_back != buf, f"{buf} -> {buf_back}")
 
         print("8) 切到数据标签")
         tabs.nth(1).click()                      # 一级：数据预览

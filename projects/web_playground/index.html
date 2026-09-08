@@ -249,6 +249,7 @@ const G = {
   started: false,    // 点过一次按钮之后才把「点下面的按钮走一步」的提示撤掉
   times: [],
   loaded: null,      // 显存里真正装着的模型 id
+  pool: [],          // 常驻在显存里的模型 —— 在池子里的切换是瞬时的
   hasNoop: false, hasBack: false,   // 当前模型支持哪些动作
   heldButtons: null, repeatLeft: 0,   // 当前这组动作还要再发几帧
   padButtons: [], padShots: 0,        // 排队的点击：还要被读几次（每次 = REPEAT 帧）
@@ -256,7 +257,8 @@ const G = {
   // 超了就丢最老的——一帧 PNG 约 100KB，不设上限会把浏览器内存吃光。
   rec: [], recMax: 600, dropped: 0,   // dropped: 因超上限被丢掉的帧数
   scrubbing: false, replaying: false, timer: null,
-  stale: false,      // 下拉框选的和 loaded 不一致 —— 此时禁止游玩
+  stale: true,       // 下拉框选的和 loaded 不一致 —— 此时禁止游玩。
+                     // 初值必须是 true：还没问到服务端装的是哪个模型之前不许玩
 };
 
 const REPEAT = 4;   // 一次点击连发几帧，对齐训练数据的 4 帧一组
@@ -548,15 +550,19 @@ function syncModelState() {
   const btn = document.getElementById('g-loadmodel');
   // 选中的就是正在跑的，没什么可载的——禁掉按钮，别让人白等一遍。
   btn.disabled = !G.stale;
-  btn.textContent = G.stale ? '载入' : '已载入';
+  // 在池子里的模型不需要重载权重，改个指针就完事（实测 50–93ms）。
+  // 按钮上写「载入」会让人以为又要等十几秒。
+  const resident = G.pool.includes(sel.value);
+  btn.textContent = !G.stale ? '已载入' : resident ? '切换' : '载入';
   btn.style.borderColor = G.stale ? 'var(--warn)' : '';
   btn.style.color = G.stale ? 'var(--warn)' : '';
   btn.style.opacity = G.stale ? '' : '.5';
   btn.style.cursor = G.stale ? '' : 'default';
   syncOverlay();
   syncPadEnabled();
-  document.getElementById('g-stale').textContent =
-    G.stale ? '↑ 选了别的模型，点「载入」后才能玩' : '';
+  document.getElementById('g-stale').textContent = !G.stale ? ''
+    : resident ? '↑ 选了别的模型，点「切换」（已常驻显存，瞬时）'
+               : '↑ 选了别的模型，点「载入」后才能玩';
   const run = document.getElementById('g-running');
   document.getElementById('g-runname').textContent = G.loadedName || '—';
   run.className = G.stale ? 'stale' : '';
@@ -640,9 +646,11 @@ function probeServer() {
     $('g-missing').textContent = missing.length
       ? `该模型没有：${missing.join('、')}（按钮已置灰）` : '';
     G.loaded = d.loaded;
+    G.pool = d.pool || [];
     G.loadedName = (MODELS.find(m => m.id === d.loaded) || {}).name || d.loaded;
     $('g-gpu').textContent =
-      `${d.gpu} · ${d.steps} 步去噪 · ${d.res} · 上下文 ${d.buffer} 帧`;
+      `${d.gpu} · ${d.steps} 步去噪 · ${d.res} · 上下文 ${d.buffer} 帧`
+      + (G.pool.length > 1 ? ` · ${G.pool.length} 个模型常驻显存` : '');
     syncModelState();
     if (d.bench) {
       $('g-bench').innerHTML =
@@ -651,6 +659,10 @@ function probeServer() {
     }
     gameNew();
   }).catch(() => {
+    // 连不上就必须掐掉游玩。以前这条分支只改了两行文字，G.stale 还停在
+    // false，于是页面写着「推理服务未启动」却照样能点出帧来。
+    G.loaded = null; G.pool = [];
+    syncModelState();
     $('g-gpu').textContent = '推理服务未启动';
     $('g-err').innerHTML = `<span class="bad">连不上 ${GAME_API}，重试中…</span>`;
     // 一次连不上就永久放弃的话，服务晚起来几秒页面就废了，只能刷新。

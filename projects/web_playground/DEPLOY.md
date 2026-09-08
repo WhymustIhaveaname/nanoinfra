@@ -179,6 +179,19 @@ Read `/tmp/youran-gamengen/server.log` on 1202b.
 The three models use different context lengths. Masao uses 64 frames.
 arnaudstiegler uses 9 frames. The server reads this from the UNet config.
 
+**All three models stay in the GPU memory.**
+One engine needs 4.3 GB, and the card has 47 GB, so the server loads all three
+at the start. A model change then only moves a pointer.
+Measured: 50 to 93 ms, against 2200 ms for a load with a cached benchmark.
+Use `--no-preload-all` for one model only.
+
+The upstream code keeps the context length in a module variable, `BUFFER_SIZE`.
+With three models in the memory, one value at load time is not enough:
+the value would belong to the model that loaded last.
+`Engine.new_session` and `Engine.step` set the value again for their own engine.
+Do not remove these two calls. Without them, Masao (64 frames) and
+arnaudstiegler (9 frames) mix, and the UNet reports a channel-count error.
+
 **Each frame takes 6 seconds**
 A new thread pays a large CUDA initialization cost.
 All GPU work must run on one thread. Do not change this.
