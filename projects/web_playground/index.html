@@ -80,8 +80,7 @@
 
   /* --- 试玩 --- */
   #screen { width: 640px; height: 512px; image-rendering: pixelated; display: block;
-            border: 1px solid var(--line); border-radius: 4px; background: #000; cursor: pointer; }
-  #screen.locked { cursor: none; border-color: var(--accent); }
+            border: 1px solid var(--line); border-radius: 4px; background: #000; }
   .gamewrap { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
   /* 两栏都要钉死宽度：不钉的话栏内那两段说明文字会把栏撑到 900px 上下，
      两栏加起来超过容器就换行，右栏掉到画面底下去。 */
@@ -92,10 +91,6 @@
   .stats .note { max-width: 420px; }
   .stats b { color: var(--fg); }
   .stats .big { font-size: 26px; color: var(--ok); font-weight: 600; }
-  .keys { display: grid; grid-template-columns: 84px 1fr; gap: 3px 12px;
-          font-size: 12px; color: var(--dim); margin-top: 12px; }
-  .keys kbd { background: #1e222b; border: 1px solid var(--line); border-bottom-width: 2px;
-              border-radius: 4px; padding: 1px 6px; font-family: ui-monospace, Menlo, monospace; }
   /* top/left 必须写：absolute 元素不给偏移就落在静态位置，也就是掉到 canvas 下面 */
   #overlay { position: absolute; top: 0; left: 0; width: 640px; height: 512px; display: flex;
              align-items: center; justify-content: center; text-align: center;
@@ -111,11 +106,6 @@
   .padbtn:active:not(:disabled) { background: var(--accent); color: #0f1115; }
   .padbtn:disabled { opacity: .3; cursor: not-allowed; }
   .padbtn[data-act="ATTACK"] { grid-column: span 2; }
-  /* 提示放在录制区那一行，不再压画面——压在 HUD 上根本看不清 */
-  #g-unsupported { opacity: 0; transition: opacity .18s; color: var(--warn);
-                   font-size: 13px; font-weight: 600; white-space: nowrap;
-                   background: #3a2f1a; border: 1px solid var(--warn);
-                   border-radius: 4px; padding: 2px 10px; }
   .modelbar { border: 1px solid var(--line); border-radius: 6px;
               padding: 12px 14px; margin-bottom: 14px; background: #13161c; }
   .bar { height: 6px; background: #1e222b; border-radius: 3px; overflow: hidden; }
@@ -187,7 +177,7 @@
 
         <div class="rel">
           <canvas id="screen" width="320" height="256"></canvas>
-          <div id="overlay">点击画面开始 · 按键才生成，松手定格 · Esc 退出</div>
+          <div id="overlay">点下面的按钮走一步</div>
         </div>
         <div id="g-pad">
           <button class="padbtn" data-act="TLEFT">↺ 左转</button>
@@ -204,18 +194,10 @@
           <label>帧 <input type="range" id="g-scrub" min="0" max="0" value="0" style="width:260px">
             <span class="val" id="g-scrubv">0 / 0</span></label>
           <span class="mono" id="g-recact"></span>
-          <span id="g-unsupported"></span>
         </div>
         <div class="acts" id="g-recacts" style="margin-top:6px;max-height:66px;overflow-y:auto"></div>
-        <div style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <div style="margin-top:10px">
           <button class="btn" id="g-new">↻ 新开一局</button>
-          <label>速度
-            <select class="btn" id="g-speed">
-              <option value="1">全速</option>
-              <option value="0.5">0.5 倍速</option>
-              <option value="0.25">0.25 倍速</option>
-            </select>
-          </label>
         </div>
       </div>
 
@@ -226,15 +208,8 @@
         <div class="row" id="g-bench" style="margin-top:8px"></div>
         <div class="row bad" id="g-err"></div>
 
-        <div class="keys">
-          <span><kbd>鼠标左右</kbd></span><span>转向</span>
-          <span><kbd>W</kbd></span><span>前进</span>
-          <span id="k-back"><kbd>S</kbd></span><span id="k-backtxt">后退</span>
-          <span><kbd>A</kbd> <kbd>D</kbd></span><span>左右平移</span>
-          <span id="k-noop"><kbd>空格</kbd></span><span id="k-nooptxt">无动作，过一帧</span>
-          <span><kbd>鼠标左键</kbd></span><span>开火</span>
-          <span><kbd>Esc</kbd></span><span>松开鼠标</span>
-        </div>
+        <div class="row" style="margin-top:8px">一次点击 = <b>4</b> 帧（对齐训练数据的 4 帧一组）</div>
+        <div class="row" id="g-missing"></div>
       </div>
     </div>
   </section>
@@ -270,24 +245,22 @@ async function api(path, opts, ms) {
 
 const GAME_API = `http://${location.hostname}:25677`;
 const G = {
-  sid: null, locked: false, stepping: false, speed: 1, steps: 0,
-  keys: new Set(), dx: 0, dxAt: 0, fire: false, times: [],
+  sid: null, stepping: false, steps: 0,
+  started: false,    // 点过一次按钮之后才把「点下面的按钮走一步」的提示撤掉
+  times: [],
   loaded: null,      // 显存里真正装着的模型 id
   hasNoop: false, hasBack: false,   // 当前模型支持哪些动作
-  heldButtons: null, repeatLeft: 0,   // 当前这组按键还要再发几帧
-  padButtons: [], padShots: 0,        // 操作按钮：还要被读几次（每次 = REPEAT 帧）
+  heldButtons: null, repeatLeft: 0,   // 当前这组动作还要再发几帧
+  padButtons: [], padShots: 0,        // 排队的点击：还要被读几次（每次 = REPEAT 帧）
   // 本局回放：每帧存下画面和当时的动作。上限 600 帧（约 2 分钟），
   // 超了就丢最老的——一帧 PNG 约 100KB，不设上限会把浏览器内存吃光。
   rec: [], recMax: 600, dropped: 0,   // dropped: 因超上限被丢掉的帧数
-  scrubbing: false, replaying: false, nextDelay: 0, timer: null,
+  scrubbing: false, replaying: false, timer: null,
   stale: false,      // 下拉框选的和 loaded 不一致 —— 此时禁止游玩
 };
 
-const REPEAT = 4;            // 一次按键连发几帧，对齐训练数据的 4 帧一组
-const TURN_DEADZONE = 6;      // 鼠标累计位移超过这个才算转向，免得手一抖就转
+const REPEAT = 4;   // 一次点击连发几帧，对齐训练数据的 4 帧一组
 
-// 只报按下了哪些键。翻成动作 id 是服务端的事——两家模型的表不一样，
-// 前端写死 id 会让按键含义整体错位。
 // ---- 本局回放 ----
 function updateRecUI() {
   const n = G.rec.length;
@@ -356,26 +329,11 @@ function stopReplay() {
   if (b) updateRecUI();          // 否则计数停在「37 / 600」直到下一帧生成
 }
 
+// 报的是按钮名，翻成动作 id 是服务端的事——两家模型的表不一样，
+// 前端写死 id 会让动作含义整体错位。空数组 = 「不动」。
 function pickButtons() {
-  // 操作按钮优先：它是一次明确的点击，不该被同时按住的键盖掉
   if (G.padShots > 0) { G.padShots--; return G.padButtons; }
-  const dx = liveDx();
-  let turn = 0;
-  if (dx >  TURN_DEADZONE) turn =  1;
-  if (dx < -TURN_DEADZONE) turn = -1;
-  G.dx = 0;
-  const fwd = G.keys.has('w'), back = G.keys.has('s');
-  const left = G.keys.has('a'), right = G.keys.has('d');
-  // 开火独占：两家的表里 ATTACK 都是单独一项，不与移动组合
-  if (G.fire) { G.fire = false; return ['ATTACK']; }
-  const b = [];
-  if (fwd)  b.push('FWD');
-  if (back) b.push('BACK');
-  if (left)  b.push('MLEFT');
-  if (right) b.push('MRIGHT');
-  if (turn < 0) b.push('TLEFT');
-  if (turn > 0) b.push('TRIGHT');
-  return b;                      // 空数组 = 什么都没按（空格走这条）
+  return [];
 }
 
 const $ = id => document.getElementById(id);
@@ -388,15 +346,6 @@ function showErr(msg) {
   _errTimer = setTimeout(clearErr, 6000);   // 别让一次抖动的提示永久挂着
 }
 function clearErr() { clearTimeout(_errTimer); $('g-err').textContent = ''; }
-
-let _nsTimer = null;
-function notSupported(what) {
-  const el = $('g-unsupported');
-  el.textContent = `${what}：当前模型没有这个动作`;
-  el.style.opacity = '1';
-  clearTimeout(_nsTimer);
-  _nsTimer = setTimeout(() => { el.style.opacity = '0'; }, 2000);
-}
 
 function drawFrame(dataUrl) {
   const img = new Image();
@@ -422,46 +371,27 @@ async function gameNew(keepRec) {
 }
 
 // 有没有待处理的输入。没有就一帧都不生成——世界冻住。
-// 这一条是整个交互的关键：模型是随机的，同样的上下文喂 NOOP 也会画出不同的下一帧，
-// 所以「一直循环」等于「你不动它也自己漂」（实测连发 30 次 NOOP，第 30 帧与第 0 帧
-// 平均差 11.66/255，墙的贴图都换了）。改成输入驱动之后，松手 = 状态定格。
+// 没有待发的帧就一帧都不生成——世界冻住。模型是随机的，同样的上下文
+// 喂「不动」也会画出不同的下一帧，所以「一直循环」等于「你不点它也自己漂」
+// （实测连发 30 次 NOOP，第 30 帧与第 0 帧平均差 11.66/255，墙的贴图都换了）。
 function hasInput() {
-  // repeatLeft 必须算进来。它不算的话，脉冲型输入（点按钮、转一下鼠标、开一枪）
-  // 走完第 1 帧后 padShots/fire/dx 都已清空，循环就此停住，剩下 3 帧「上膛」
-  // 留在 heldButtons 里，等下一次输入时先把上一个动作打完——实测点「左转」
-  // 发出去的是「前进 前进 前进 左转」。
+  // repeatLeft 必须算进来。不算的话，一次点击走完第 1 帧后 padShots 已清空，
+  // 循环就此停住，剩下 3 帧「上膛」留在 heldButtons 里，等下一次点击时先把
+  // 上一个动作打完——实测点「左转」发出去的是「前进 前进 前进 左转」。
   if (G.repeatLeft > 0 && G.heldButtons) return true;
-  // 空格只在模型确实有「不动」时才算输入：否则在没有 NOOP 的模型上会不停
-  // 发请求、不停被 422 拒绝，白烧 GPU。
-  for (const k of ['w', 'a', 'd']) if (G.keys.has(k)) return true;
-  if (G.keys.has('s') && G.hasBack) return true;   // 没有后退的模型不能让 S 发请求
-  if (G.keys.has(' ') && G.hasNoop) return true;
-  if (G.padShots > 0) return true;           // 点了操作按钮
-  return G.fire || Math.abs(liveDx()) > TURN_DEADZONE;
+  return G.padShots > 0;
 }
 
-// 鼠标停了就不再算作在转。少了这一条，最后一次 mousemove 攒下的 dx 会在松手后
-// 再多转 REPEAT 帧，和「松手定格」直接打架。
-const DX_TTL = 150;   // ms
-function liveDx() {
-  if (performance.now() - (G.dxAt || 0) > DX_TTL) G.dx = 0;
-  return G.dx;
-}
-
-// 输入状态只有这一个清空口。以前散落在 keyup、410 分支等处，
+// 输入状态只有这一个清空口。以前散落在各个分支里，
 // 漏一处就会把上一次的动作带进下一次（或让世界自己一直走）。
 function resetInput() {
-  G.keys.clear();
-  G.dx = 0; G.dxAt = 0; G.fire = false;
   G.padShots = 0; G.padButtons = [];
   G.repeatLeft = 0; G.heldButtons = null;
   clearTimeout(G.timer); G.timer = null;      // 排着的下一轮也得撤，否则还会再走一帧
 }
 
-// 全页只允许有一条循环链。以前每个 keydown / mousemove 都直接调 gameLoop()，
-// 而循环自己又在 finally 里 setTimeout 续一条 —— 于是链会越积越多，各自按
-// nextDelay 排队，合起来的实际帧率是链数的倍数，慢放形同虚设（实测 0.25 倍速
-// 排的是 630ms，实际却 216ms 一帧，因为同时跑着 3 条链）。
+// 全页只允许有一条循环链。以前每次输入都直接调 gameLoop()，而循环自己又在
+// finally 里再排一条 —— 链会越积越多，实际帧率变成链数的倍数。
 function schedule(ms) {
   clearTimeout(G.timer);
   G.timer = setTimeout(() => { G.timer = null; gameLoop(); }, ms || 0);
@@ -470,7 +400,7 @@ function schedule(ms) {
 function kick() { if (!G.stepping && !G.timer) schedule(0); }
 
 async function gameLoop() {
-  if (!G.locked || G.stepping || G.stale || G.replaying) return;
+  if (G.stepping || G.stale || G.replaying) return;
   if (!hasInput()) return;                 // 松手就停在这里
   // stepping 这个标志位必须由 finally 统一释放。以前在每条 return 分支里手动清，
   // 漏掉一条就永久卡死——表现正是「按键大部分时候没反应，偶尔有反应」。
@@ -536,57 +466,20 @@ async function gameLoop() {
     // 这里报的是模型本身的速率，不含慢放的等待。慢放只是播放节流，不改推理快慢。
     $('g-fps').textContent = (1000 / mean).toFixed(2) + ' fps';
     again = true;
-    G.nextDelay = Math.max(0, (1 / G.speed - 1) * wall);
   } catch (e) {
     showErr('推理请求失败，按键可重试');
     G.repeatLeft = 0; G.heldButtons = null;
   } finally {
     G.stepping = false;                    // 无论走哪条路都要放开
-    if (again) schedule(G.nextDelay || 0);
+    if (again) schedule(0);
   }
 }
 
+// 输入只有一条路：点操作按钮。键盘和鼠标转向已整个去掉——
+// 「按一下键」和「点一下按钮」给出的帧数不一样（1 帧 vs 4 帧），
+// 两套语义并存只会让人搞不清自己到底发了什么。
 function initGame() {
-  const cv = $('screen');
-  cv.onclick = () => { if (!G.stale) cv.requestPointerLock(); };
-  document.addEventListener('pointerlockchange', () => {
-    const locked = document.pointerLockElement === cv;
-    cv.classList.toggle('locked', locked);
-    G.locked = locked;
-    syncOverlay();
-    if (!locked) resetInput();          // 解锁时清干净，否则按着的键会一直留着
-  });
-  // Alt-Tab / 切标签页时 keyup 不会派发给页面，按着的键会永久卡在 G.keys 里，
-  // 回来之后世界自己一直走还停不下来。失焦一律清空。
-  addEventListener('blur', resetInput);
   document.addEventListener('visibilitychange', () => { if (document.hidden) resetInput(); });
-  document.addEventListener('mousemove', e => {
-    if (document.pointerLockElement !== cv || !e.movementX) return;
-    G.dx += e.movementX; G.dxAt = performance.now(); kick();
-  });
-  document.addEventListener('mousedown', e => {
-    if (document.pointerLockElement === cv && e.button === 0) { G.fire = true; kick(); }
-  });
-  addEventListener('keydown', e => {
-    if (document.pointerLockElement === cv) {
-      if (e.repeat) { e.preventDefault(); return; }   // 自动重复会绕开慢放节流
-      const k = e.key.toLowerCase();
-      G.keys.add(k);
-      if (['w','a','s','d',' '].includes(k)) e.preventDefault();
-      // 按了这个模型没有的键就说一声。静悄悄不响应，用户只会以为坏了。
-      if (k === ' ' && !G.hasNoop) notSupported('空格（无动作）');
-      if (k === 's'  && !G.hasBack) notSupported('S（后退）');
-      kick();
-    }
-  });
-  addEventListener('keyup', e => {
-    G.keys.delete(e.key.toLowerCase());
-    // 松开最后一个键时把连发余量也清掉，免得它拖着世界继续走
-    const others = ['w','a','s','d',' '].some(k => G.keys.has(k));
-    if (!others && !G.fire && Math.abs(liveDx()) <= TURN_DEADZONE && G.padShots === 0) {
-      G.repeatLeft = 0; G.heldButtons = null;
-    }
-  });
   $('g-replay').onclick = () => G.replaying ? stopReplay() : startReplay();
   $('g-scrub').oninput = e => { G.scrubbing = true; stopReplay(); showRecFrame(+e.target.value); };
   $('g-recacts').onclick = e => {
@@ -597,12 +490,12 @@ function initGame() {
   for (const b of document.querySelectorAll('.padbtn')) {
     b.onclick = () => {
       if (G.stale || G.replaying) return;     // 换模型中／回放中不接受输入
-      const act = b.dataset.act;
-      // 用按钮玩不需要锁鼠标，但遮罩得撤掉——它只在 pointerlockchange 里撤，
-      // 而点按钮不会触发那个事件，结果就是画面一直被半透明遮罩盖着。
-      G.locked = true;
+      // 点完就丢掉焦点：按钮保留焦点的话，之后敲空格或回车会把它再激活一次，
+      // 等于键盘又能玩了 —— 而键盘是明确要去掉的。
+      b.blur();
+      G.started = true;
       syncOverlay();
-      G.padButtons = act ? [act] : [];
+      G.padButtons = b.dataset.act ? [b.dataset.act] : [];
       // 1 而不是 REPEAT：padShots 是「还要被 pickButtons 读几次」，
       // 而每读一次本身就会重复 REPEAT 帧。设成 REPEAT 会变成 4×4=16 帧。
       G.padShots = 1;
@@ -612,7 +505,6 @@ function initGame() {
   $('g-new').onclick = () => gameNew();
   $('g-loadmodel').onclick = loadModel;
   $('g-model').onchange = () => { showModelNote(); syncModelState(); };
-  $('g-speed').onchange = e => { G.speed = +e.target.value; };
 
   probeServer();
 }
@@ -645,7 +537,7 @@ function syncPadEnabled() {
 
 function syncOverlay() {
   document.getElementById('overlay').style.display =
-    (G.locked && !G.stale) ? 'none' : 'flex';
+    (G.started && !G.stale) ? 'none' : 'flex';
 }
 
 function syncModelState() {
@@ -739,19 +631,14 @@ function probeServer() {
     }
     probeServer._tries = 0;
     fillModels(d.models, d.loaded);
-    // 按键表随模型变：a16z 那 18 个动作里没有 BACK 也没有 NOOP
-    const acts = d.actions || [];
-    const hasBack = acts.some(a => a.split('+').includes('BACK'));
-    for (const [id, txt, ok] of [['k-back', '后退', hasBack],
-                                 ['k-noop', '无动作，过一帧', d.has_noop]]) {
-      const kbd = document.getElementById(id), lbl = document.getElementById(id + 'txt');
-      if (!kbd) continue;
-      kbd.style.opacity = ok ? '' : '.35';
-      lbl.style.opacity = ok ? '' : '.35';
-      lbl.textContent = ok ? txt : txt + '（该模型没有）';
-    }
+    // 动作表随模型变：a16z 那 18 个动作里没有 BACK 也没有 NOOP
     G.hasNoop = !!d.has_noop;
     G.hasBack = (d.actions || []).some(a => a.split('+').includes('BACK'));
+    const missing = [];
+    if (!G.hasBack) missing.push('后退');
+    if (!G.hasNoop) missing.push('不动');
+    $('g-missing').textContent = missing.length
+      ? `该模型没有：${missing.join('、')}（按钮已置灰）` : '';
     G.loaded = d.loaded;
     G.loadedName = (MODELS.find(m => m.id === d.loaded) || {}).name || d.loaded;
     $('g-gpu').textContent =

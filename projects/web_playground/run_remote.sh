@@ -34,6 +34,15 @@ mkdir -p outputs outputs/gamengen
 
 remote() { ssh -o BatchMode=yes "$HOST" bash -s; }
 
+# 隧道有两种存在形式，都要清：独立的 ssh -N 进程，以及挂在共享主连接上的转发。
+# 只清前者的话端口仍被占着，而且没有任何进程能让你看出来是谁占的。
+kill_tunnel() {
+  pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" 2>/dev/null
+  ssh -O cancel -L "0.0.0.0:$PORT:127.0.0.1:$PORT" "$HOST" 2>/dev/null
+  sleep 2
+  ! ss -tlnp 2>/dev/null | grep -q ":$PORT "
+}
+
 case "${1:-status}" in
 
 setup)
@@ -104,19 +113,33 @@ EOS
   LOCAL=$(ps -u "$(whoami)" -o pid,cmd | grep "[d]oom_ngen_server.py --port $PORT" | awk '{print $1}')
   # 不加引号：$LOCAL 可能是多个 pid，引起来会被当成单个参数而 kill 失败
   [ -n "$LOCAL" ] && kill $LOCAL && echo "  本机推理服务已停，显卡释放"
-  pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" 2>/dev/null
-  sleep 2
-  nohup ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-        -o ServerAliveCountMax=3 -L "0.0.0.0:$PORT:127.0.0.1:$PORT" "$HOST" \
+  kill_tunnel
+  # ControlPath=none 是关键。不加的话，端口转发会挂在 ~/.ssh/cm 里那条共享主连接上，
+  # 而那条主连接可能已经开了几十天。实测 ping 15ms、远端本地环回 1.5ms，
+  # 但走老主连接的转发往返要 5–9 秒——点一下按钮等十几秒才出 4 帧，
+  # 看起来就是「网页没有响应」。
+  #
+  # 更阴的一点：挂在主连接上的转发**不是一个独立进程**，pkill ssh -N 杀不掉它，
+  # 端口一直被占着。此时新起的专用隧道因 ExitOnForwardFailure 静默退出，
+  # 健康检查量到的仍是那条老转发——修了等于没修，而且完全看不出来。
+  # 所以 kill_tunnel 里必须用 ssh -O cancel 把主连接上的转发也撤掉。
+  nohup ssh -N -o ControlPath=none -o ExitOnForwardFailure=yes \
+        -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+        -o TCPKeepAlive=yes -L "0.0.0.0:$PORT:127.0.0.1:$PORT" "$HOST" \
         > outputs/gamengen/tunnel.log 2>&1 &
   echo "  隧道 PID $!"
   sleep 5
+  if ! pgrep -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" >/dev/null; then
+    echo "  隧道起不来（端口 $PORT 可能被别的转发占着）。看 outputs/gamengen/tunnel.log"
+    ss -tlnp 2>/dev/null | grep ":$PORT" || true
+    exit 1
+  fi
   curl -s -m 20 "http://127.0.0.1:$PORT/info" \
     | python3 -c "import json,sys; d=json.load(sys.stdin); print('  通了:', d['gpu'], '|', d['bench']['mean_ms'], 'ms/帧')" \
     || { echo "  隧道没通，看 outputs/gamengen/tunnel.log"; exit 1; }
-  # 隧道健康检查。一条久开的隧道会劣化：实测新隧道空转 41ms，而连开数小时、
-  # 被反复 kill 重连过的老隧道要 830ms——足以把 4.9 fps 拖成 1 fps，
-  # 而且症状看起来像「远端 GPU 慢」，极易误判。所以每次 start 都量一下。
+  # 隧道健康检查。劣化的隧道症状看起来像「远端 GPU 慢」，极易误判，
+  # 所以每次 start 都量一下。实测专用连接 40ms 上下；
+  # 复用老主连接时量到过 830ms，乃至 5–9 秒。
   echo -n "  隧道空转延迟: "
   python3 - <<'PYEOF'
 import http.client, time
@@ -131,7 +154,7 @@ PYEOF
   ;;
 
 stop)
-  pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" && echo "隧道已停"
+  kill_tunnel && echo "隧道已停"
   remote <<EOS
 pkill -u \$(whoami) -f "doom_ngen_server.py --port $PORT" && echo "远端服务已停" || echo "远端本来就没跑"
 EOS

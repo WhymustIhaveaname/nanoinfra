@@ -76,6 +76,29 @@ If only the tunnel stops, run `start`. Do not run `setup` again.
 Do not put shell substitutions in an `ssh host "command"` string.
 Pipe a script to `ssh host bash -s` instead.
 
+**An SSH tunnel can attach to a shared master connection. Then it is slow.**
+`~/.ssh/config` uses `ControlMaster`. A master connection can stay open for weeks.
+A port forward on an old master connection is very slow.
+Measured: a ping is 15 ms and the remote loopback is 1.5 ms,
+but a forward on a 23-day-old master needed 5 to 9 seconds for each request.
+One click then needed more than 10 seconds to make 4 frames.
+
+The forward on a master connection is not a separate process.
+`pkill ssh -N` does not stop it. The port stays busy.
+A new dedicated tunnel then fails at the bind and stops without a message,
+because of `ExitOnForwardFailure`. The health check still measures the old forward.
+The fix looks like it works, but nothing changed.
+
+`run_remote.sh` gives the tunnel `-o ControlPath=none`, and `stop` also runs
+`ssh -O cancel -L ...` to remove a forward from the master connection.
+A dedicated tunnel measures about 50 ms.
+
+**1202b is a shared machine. Other users can make it slow.**
+Measured once: load average 91 on 128 cores, from another user's jobs.
+Our GPU still made a frame in 183 ms, but the SSH forward became slow.
+Check with `ssh 1202b uptime` before you report a slow page.
+If 1202b is busy, use the local GPU with `bash run.sh game`.
+
 **The bind addresses are different on purpose.**
 The remote server binds to `127.0.0.1`. The API has no authentication.
 Only the SSH tunnel reaches it. Do not open it to the laboratory network.
@@ -93,10 +116,13 @@ cd gamengen
 `browsertest.py` opens the page and makes about 100 checks.
 It checks the button map, the model switch, the load progress, and the tab layout.
 
-Sections 6k to 6n dispatch real keyboard and mouse events. They lock the pointer,
-hold keys down, and release them. Use these sections for all input behavior.
-Do not test input by an assignment to `G.keys`. An assignment to `G.keys` hides
-these three defects, which occurred:
+The page has one input path: a click on an action button. The keyboard and the
+mouse-turn control are removed. A click sends four frames of the same action.
+Four frames agree with the training data, which holds each action for four frames.
+
+The test clicks the buttons. It does not assign to internal state such as
+`G.keys`. Section 4c makes sure that the keyboard does nothing. Keep this rule.
+An assignment to internal state hid these three defects, which occurred:
 
 - A key that the model does not support sent 40 requests each second.
 - The speed control had no effect, because each mouse move event started a

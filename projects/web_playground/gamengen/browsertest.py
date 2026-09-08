@@ -1,12 +1,12 @@
-"""browsertest.py — 用无头 Chrome 真的把页面打开、真的按键，验证前端不是纸上谈兵。
+"""browsertest.py — 用无头 Chrome 真的把页面打开、真的点按钮，验证前端不是纸上谈兵。
 
 playtest.py 验的是「动作发过去，模型回的画面对不对」，走的是 HTTP 接口，绕过了整个前端。
-这里补的是另一半：页面能不能加载、标签能不能切、按键状态能不能变成正确的
-按钮上报、canvas 上的像素有没有真的在变。
+这里补的是另一半：页面能不能加载、标签能不能切、点按钮有没有变成正确的动作上报、
+canvas 上的像素有没有真的在变。
 
-注意边界：本测试**不派发真实的键盘/鼠标事件**，而是直接设置 G.keys / G.dx
-再调 gameLoop。所以 index.html 里的 keydown/keyup/mousemove/mousedown 和
-Pointer Lock 那几个 handler 是**没被覆盖到**的。
+输入只有一条路：点操作按钮。键盘和鼠标转向已从页面整个移除，
+所以本测试**只用真实的 click**，不再直接改 G.keys 那类内部状态。
+4c 一段专门验证敲键盘确实什么都不发生。
 """
 
 import argparse
@@ -72,87 +72,80 @@ def main():
         check("canvas 上有画面（非全黑）", not blank)
         pg.locator("#game").screenshot(path=f"{a.shots}/browser_1_game.png")
 
-        print("4) 模拟操作：W 前进 + 持续右转")
-        before = pg.evaluate("() => document.getElementById('screen').toDataURL().length")
-        # 不依赖 Pointer Lock：直接喂状态并驱动同一个循环。
-        # dx 必须持续补——鼠标位移是一次性增量，pickAction 取走就清零（这是对的），
-        # 真人持续移动鼠标才会不断产生 movementX，这里用定时器模拟。
-        pg.evaluate('''() => {
-            G.locked = true; G.keys.add('w');
-            window.__dxFeed = setInterval(() => { G.dx += 20; G.dxAt = performance.now(); gameLoop(); }, 30);
-            gameLoop();
-        }''')
-        pg.wait_for_timeout(6000)
-        steps = int(pg.locator("#g-steps").inner_text())
-        check("生成了新帧", steps >= 3, f"steps={steps}")
-        act = pg.locator("#g-act").inner_text()
-        check("W + 持续右转 -> 前进且右转", set(act.split("+")) == {"FWD", "TRIGHT"},
-              f"实际 {act}")
-        after = pg.evaluate("() => document.getElementById('screen').toDataURL().length")
-        check("canvas 内容变了", before != after)
-        fps = pg.locator("#g-fps").inner_text()
-        check("显示了 fps", "fps" in fps, fps)
+        print("4) 点操作按钮出帧")
+        # 输入只有一条路：点按钮。键盘和鼠标转向已从页面整个移除。
+        REP = 4          # 一次点击 = 4 帧
+        def tap(act, n=None, timeout=20000):
+            """点一下按钮，等这一组帧全部到齐再返回。"""
+            base = pg.evaluate("() => G.rec.length")
+            pg.click(f'.padbtn[data-act="{act}"]')
+            want = base + (n if n is not None else REP)
+            waited = 0
+            while pg.evaluate("() => G.rec.length") < want and waited < timeout:
+                pg.wait_for_timeout(200); waited += 200
+            pg.wait_for_timeout(400)     # 多等一拍，好抓出「多发了一帧」
+            return base
 
-        # 客户端墙钟 vs 服务端自报耗时：差值就是传输 + PNG 解码 + canvas 绘制的开销
+        before = pg.evaluate("() => document.getElementById('screen').toDataURL().length")
+        tap("FWD")
+        steps = int(pg.locator("#g-steps").inner_text())
+        check("点一下前进就出帧", steps >= 3, f"steps={steps}")
+        check("状态栏动作是前进", pg.locator("#g-act").inner_text() == "FWD",
+              pg.locator("#g-act").inner_text())
+        check("canvas 内容变了",
+              before != pg.evaluate("() => document.getElementById('screen').toDataURL().length"))
+        check("显示了 fps", "fps" in pg.locator("#g-fps").inner_text(),
+              pg.locator("#g-fps").inner_text())
+
         srv_ms = float(pg.locator("#g-ms").inner_text())
         cli_ms = pg.evaluate("() => G.times.reduce((a,b)=>a+b,0)/G.times.length")
         print(f"     服务端 {srv_ms:.0f} ms/帧，客户端墙钟 {cli_ms:.0f} ms/帧，"
               f"前端开销 {cli_ms - srv_ms:.0f} ms")
         check("前端开销不超过推理本身", cli_ms - srv_ms < srv_ms,
               f"开销 {cli_ms - srv_ms:.0f} ms")
-        pg.evaluate("() => { clearInterval(window.__dxFeed); G.keys.clear(); }")
 
-        print("4b) 松手就定格 / 空格走一帧")
-        pg.wait_for_timeout(1500)
+        print("4b) 不点就定格")
         n0 = int(pg.locator("#g-steps").inner_text())
-        pg.wait_for_timeout(3000)
-        n1 = int(pg.locator("#g-steps").inner_text())
-        check("没有输入时不再生成新帧", n0 == n1, f"{n0} -> {n1}")
-        has_noop = pg.evaluate("() => G.hasNoop")
-        pg.evaluate("() => { G.keys.add(' '); gameLoop(); }")
-        pg.wait_for_timeout(1500)
-        pg.evaluate("() => { G.keys.delete(' '); G.repeatLeft = 0; }")
-        pg.wait_for_timeout(1000)
-        n2 = int(pg.locator("#g-steps").inner_text())
-        if has_noop:
-            check("有 NOOP 的模型：空格能推进", n2 > n1, f"{n1} -> {n2}")
-        else:
-            # 没有 NOOP 的模型上按空格不该发任何请求，否则会被 422 拒到白烧 GPU
-            check("无 NOOP 的模型：空格不空转", n2 == n1, f"{n1} -> {n2}")
+        pg.wait_for_timeout(3500)
+        check("没有输入时不再生成新帧",
+              int(pg.locator("#g-steps").inner_text()) == n0,
+              f"{n0} -> {pg.locator('#g-steps').inner_text()}")
 
-        print("4c) 鼠标停下就不再转")
-        pg.evaluate("() => { resetInput(); G.dx = 99; G.dxAt = performance.now(); }")
-        check("刚动过鼠标 -> 算作在转", pg.evaluate("() => hasInput()"))
-        pg.wait_for_timeout(400)
-        check("停手 400ms 后 -> 不再算作在转", not pg.evaluate("() => hasInput()"))
-        pg.evaluate("() => resetInput()")
+        print("4c) 键盘已经整个去掉，敲键不许有任何反应")
+        steps_seen = []
+        pg.on("response", lambda r: steps_seen.append(r.status) if "/step" in r.url else None)
+        # 空格和回车要一起试：按钮点完若还留着焦点，这两个键会把它再激活一次，
+        # 等于键盘又能玩了。
+        for k in ("w", "a", "s", "d", " ", "Enter"):
+            pg.keyboard.down(k); pg.wait_for_timeout(250); pg.keyboard.up(k)
+        pg.wait_for_timeout(2000)
+        check("敲 WASD／空格／回车不发任何请求", len(steps_seen) == 0,
+              f"发了 {len(steps_seen)} 个")
+        check("敲键不产生帧", int(pg.locator("#g-steps").inner_text()) == n0,
+              f"{n0} -> {pg.locator('#g-steps').inner_text()}")
+        check("点画面不再锁指针", pg.evaluate("""() => {
+                  document.getElementById('screen').click();
+                  return document.pointerLockElement === null; }"""))
 
-        print("5) 按键上报逐一核对")
-        cases = [(set(), 0, []), ({"w"}, 0, ["FWD"]), ({"s"}, 0, ["BACK"]),
-                 ({"a"}, 0, ["MLEFT"]), ({"d"}, 0, ["MRIGHT"]),
-                 (set(), -40, ["TLEFT"]), (set(), 40, ["TRIGHT"]),
-                 ({"w"}, -40, ["FWD", "TLEFT"]), ({"s"}, 40, ["BACK", "TRIGHT"])]
-        for keys, dx, want in cases:
-            got = pg.evaluate("""([keys, dx]) => {
-                G.keys = new Set(keys); G.dx = dx; G.dxAt = performance.now(); G.fire = false;
-                return pickButtons();
-            }""", [list(keys), dx])
-            check(f"{sorted(keys) or '无键'} dx={dx:>4} -> {want or '空'}",
-                  sorted(got) == sorted(want), f"实际 {got}")
-        fire = pg.evaluate("""() => { G.keys=new Set(['w']); G.dx=40; G.dxAt=performance.now(); G.fire=true;
-            return pickButtons(); }""")
-        check("开火独占（压过 W 和转向）", fire == ["ATTACK"], f"实际 {fire}")
+        print("5) 每个按钮上报的动作名逐一核对")
+        for act in ("FWD", "BACK", "MLEFT", "MRIGHT", "TLEFT", "TRIGHT", "ATTACK", ""):
+            btn = pg.locator(f'.padbtn[data-act="{act}"]')
+            if btn.is_disabled():
+                print(f"     跳过「{act or 'NOOP'}」：当前模型没有这个动作")
+                continue
+            n = tap(act)
+            sent = pg.evaluate(f"() => G.rec.slice({n}).map(r => r.action)")
+            want = act or "NOOP"     # 空按钮 = 不动，服务端报回 NOOP
+            check(f"点「{act or '不动'}」上报 {want}",
+                  len(sent) == 4 and set(sent) == {want}, f"实际 {sent}")
         # 动作 id 的翻译交给服务端，按模型的表来——这是「不动发成左转」那个 bug 的修法
         tbl = pg.evaluate("() => fetch(GAME_API+'/info').then(r=>r.json()).then(d=>[d.actions.length, d.has_noop])")
         check("服务端报出当前模型的动作表", isinstance(tbl, list) and tbl[0] in (12, 18),
               f"表长 {tbl}")
 
-        print("6) 减速模式")
-        for v, want in [("0.5", "0.5"), ("0.25", "0.25")]:
-            pg.select_option("#g-speed", v)
-            got = pg.evaluate("() => G.speed")
-            check(f"选 {v} 倍速", str(got) == want, f"G.speed={got}")
-        pg.select_option("#g-speed", "1")
+        print("6) 速度栏已移除")
+        check("页面上没有速度选择器",
+              pg.evaluate("() => document.getElementById('g-speed') === null"))
 
         print("6b) 选了模型不载入就不能玩")
         MODEL_NAMES.update(dict(zip(
@@ -170,10 +163,9 @@ def main():
               f"确认框={pg.locator('#g-runname').inner_text()} 期望={MODEL_NAMES[cur0]}")
         check("确认框变成告警态", "stale" in (pg.get_attribute("#g-running","class") or ""))
         before_n = int(pg.locator("#g-steps").inner_text())
-        pg.evaluate("() => { G.locked = true; G.keys.add('w'); gameLoop(); }")
+        pg.click('.padbtn[data-act="FWD"]', force=True)
         pg.wait_for_timeout(2500)
-        pg.evaluate("() => G.keys.clear()")
-        check("不一致时按键不生成任何帧",
+        check("不一致时点按钮不生成任何帧",
               int(pg.locator("#g-steps").inner_text()) == before_n,
               f"{before_n} -> {pg.locator('#g-steps').inner_text()}")
         pg.select_option("#g-model", cur0)
@@ -184,22 +176,22 @@ def main():
               pg.locator("#g-loadmodel").inner_text())
         check("确认框恢复正常态", "stale" not in (pg.get_attribute("#g-running","class") or ""))
 
-        print("6c) 按下模型不支持的键要有提示")
-        pg.evaluate("() => notSupported('空格（无动作）')")
-        pg.wait_for_timeout(250)
-        msg = pg.locator("#g-unsupported").inner_text()
-        check("提示文字出现", "没有这个动作" in msg, msg)
-        op = pg.evaluate("() => getComputedStyle(document.getElementById('g-unsupported')).opacity")
-        check("提示可见", float(op) > 0.9, f"opacity={op}")
-        pg.wait_for_timeout(2400)
-        op2 = pg.evaluate("() => getComputedStyle(document.getElementById('g-unsupported')).opacity")
-        check("提示会自己消失", float(op2) < 0.1, f"opacity={op2}")
+        print("6c) 模型缺哪些动作要写清楚，按钮要置灰")
+        missing = pg.locator("#g-missing").inner_text()
+        for act, name in (("BACK", "后退"), ("", "不动")):
+            has = pg.evaluate(f"() => G.{'hasBack' if act else 'hasNoop'}")
+            dis = pg.is_disabled(f'.padbtn[data-act="{act}"]')
+            check(f"「{name}」按钮状态和模型一致", dis == (not has),
+                  f"模型有={has} 按钮禁用={dis}")
+            if not has:
+                check(f"说明里写了缺「{name}」", name in missing, missing)
+        if pg.evaluate("() => G.hasBack && G.hasNoop"):
+            check("模型什么都有时不写多余的话", missing.strip() == "", missing)
 
         print("6d) 本局录制与回放")
-        pg.evaluate("() => { G.locked = true; G.keys.add('w'); gameLoop(); }")
+        pg.evaluate("() => { gameNew(); }")
         pg.wait_for_timeout(2500)
-        pg.evaluate("() => { G.keys.clear(); G.repeatLeft = 0; }")
-        pg.wait_for_timeout(600)
+        tap("FWD"); tap("TLEFT")
         n = pg.evaluate("() => G.rec.length")
         check("玩过的帧被记录下来", n >= 3, f"{n} 帧")
         check("动作历史条有格子",
@@ -223,28 +215,34 @@ def main():
         # 这条以前只数帧数，不看动作，所以在「点左转却发出 FWD,FWD,FWD,TLEFT」时
         # 照样通过——帧数对、动作全错。必须断言发出去的动作本身。
         for act in ("FWD", "TLEFT", "ATTACK", "MRIGHT"):
-            before = pg.evaluate("() => G.rec.length")
-            pg.click(f'.padbtn[data-act="{act}"]')
-            pg.wait_for_timeout(3000)
+            before = tap(act)
             sent = pg.evaluate(f"() => G.rec.slice({before}).map(r => r.action)")
             check(f"点「{act}」发出 {rep} 帧且全是它", len(sent) == rep and set(sent) == {act},
                   f"实际 {sent}")
         check("点完不留残留", pg.evaluate("() => G.repeatLeft") == 0)
 
         print("6f) 回放期间不吃输入，结束后不倒灌")
-        pg.evaluate("() => { startReplay(); G.keys.add('w'); G.dx = 99; G.dxAt = performance.now(); G.fire = true; }")
+        pg.evaluate("() => startReplay()")
+        pg.wait_for_timeout(300)
+        pg.click('.padbtn[data-act="FWD"]', force=True)   # 回放中点按钮应当被吞掉
         pg.wait_for_timeout(300)
         n0 = pg.evaluate("() => G.rec.length")
         pg.wait_for_timeout(1200)
         check("回放中不追加新帧", pg.evaluate("() => G.rec.length") == n0)
         pg.evaluate("() => stopReplay()")
         pg.wait_for_timeout(300)
-        check("回放结束后输入已清空", not pg.evaluate("() => hasInput()"))
+        check("回放结束后没有攒下的输入", not pg.evaluate("() => hasInput()"))
+        check("回放中按钮是置灰的（不是静默吞掉）",
+              pg.evaluate('''() => { startReplay();
+                  const d = document.querySelector('.padbtn[data-act="FWD"]').disabled;
+                  stopReplay(); return d; }'''))
 
-        print("6g) 失焦/切后台不留卡住的按键")
-        pg.evaluate("() => { G.keys.add('w'); G.keys.add('a'); G.dx = 50; G.dxAt = performance.now(); G.fire = true; }")
-        pg.evaluate("() => window.dispatchEvent(new Event('blur'))")
-        check("失焦后按键全释放", not pg.evaluate("() => hasInput()"))
+        print("6g) 切到后台不留排队的帧")
+        pg.evaluate('''() => { G.padShots = 3; G.repeatLeft = 3; G.heldButtons = ['FWD'];
+            Object.defineProperty(document, 'hidden', {value: true, configurable: true});
+            document.dispatchEvent(new Event('visibilitychange')); }''')
+        check("切后台后排队清空", not pg.evaluate("() => hasInput()"))
+        pg.evaluate("() => Object.defineProperty(document, 'hidden', {value: false, configurable: true})")
 
         print("6h) 错误提示会自己消失，不会永久挂着")
         pg.evaluate("() => showErr('测试')")
@@ -273,52 +271,33 @@ def main():
         print("6j) 请求都带超时，不会永久挂死")
         check("有 AbortController 超时封装", pg.evaluate("() => typeof api === 'function'"))
 
-        print("6k) 真实键鼠（这一段不再伪造 G.keys，全走浏览器事件）")
-        unlock = lambda: (pg.evaluate("() => document.exitPointerLock()"),
-                          pg.wait_for_timeout(300))
-        def lock():
-            pg.click("#screen"); pg.wait_for_timeout(700)
-            pg.evaluate("() => resetInput()"); pg.wait_for_timeout(300)
+        print("6k) 连点多个按钮，动作不许串台")
+        pg.evaluate("() => gameNew()"); pg.wait_for_timeout(2500)
+        seq = [a for a in ("FWD", "TLEFT", "ATTACK", "MRIGHT")
+               if not pg.is_disabled(f'.padbtn[data-act="{a}"]')]
+        for act in seq:
+            n = tap(act)
+            sent = pg.evaluate(f"() => G.rec.slice({n}).map(r => r.action)")
+            # 曾经点「左转」发出去的是「前进 前进 前进 左转」——帧数对、动作全错
+            check(f"点「{act}」发出 4 帧且全是它",
+                  len(sent) == 4 and set(sent) == {act}, f"实际 {sent}")
+        check("点完不留残留", pg.evaluate("() => G.repeatLeft") == 0)
 
-        steps = []
-        pg.on("response", lambda r: steps.append(r.status) if "/step" in r.url else None)
-
-        lock()
-        check("点画面能锁定指针", pg.evaluate("() => G.locked"))
-        n0 = pg.evaluate("() => G.rec.length")
-        pg.keyboard.down("w"); pg.wait_for_timeout(2500)
-        pg.keyboard.up("w"); pg.wait_for_timeout(1500)
-        check("真按 W 有帧生成", pg.evaluate("() => G.rec.length") > n0)
-        check("松开 W 就定格",
-              pg.evaluate("() => G.rec.length") ==
-              (pg.wait_for_timeout(1500) or pg.evaluate("() => G.rec.length")))
-
-        # 按住一个当前模型没有的键，曾经会按键盘自动重复的速率狂发 422
-        noback = not pg.evaluate("() => G.hasBack")
-        if noback:
-            steps.clear()
-            pg.keyboard.down("s"); pg.wait_for_timeout(3000); pg.keyboard.up("s")
-            pg.wait_for_timeout(500)
-            check("按住模型没有的键不发请求", len(steps) == 0, f"发了 {len(steps)} 个")
-
-        print("6l) 慢放对真实按键也要生效（曾被 mousemove 冲垮）")
-        rate = {}
-        for sp in ("1", "0.25"):
-            unlock(); pg.select_option("#g-speed", sp); lock()
-            pg.evaluate("() => { G.rec = []; }")
-            pg.keyboard.down("w"); pg.wait_for_timeout(6000)
-            pg.keyboard.up("w"); pg.wait_for_timeout(1500)
-            rate[sp] = pg.evaluate("() => G.rec.length")
-        check("0.25 倍速确实慢约四倍",
-              0.15 <= rate["0.25"] / max(rate["1"], 1) <= 0.40,
-              f"全速 {rate['1']} 帧 vs 四分之一速 {rate['0.25']} 帧")
-        unlock(); pg.select_option("#g-speed", "1")
+        print("6l) 连点两次不许把两组动作绞在一起")
+        n = pg.evaluate("() => G.rec.length")
+        pg.click('.padbtn[data-act="FWD"]')
+        pg.click('.padbtn[data-act="TLEFT"]')
+        waited = 0
+        while pg.evaluate("() => G.rec.length") < n + 8 and waited < 30000:
+            pg.wait_for_timeout(200); waited += 200
+        pg.wait_for_timeout(400)
+        sent = pg.evaluate(f"() => G.rec.slice({n}).map(r => r.action)")
+        check("先 4 帧前进，再 4 帧左转", sent == ["FWD"] * 4 + ["TLEFT"] * 4, f"实际 {sent}")
 
         print("6m) 新开一局要真的清空录制")
-        lock(); pg.keyboard.down("w"); pg.wait_for_timeout(2500)
-        pg.keyboard.up("w"); pg.wait_for_timeout(1500)
+        tap("FWD")
         check("清空前有帧", pg.evaluate("() => G.rec.length") > 0)
-        unlock(); pg.click("#g-new"); pg.wait_for_timeout(2500)
+        pg.click("#g-new"); pg.wait_for_timeout(2500)
         # 曾经写成 onclick = gameNew，MouseEvent 被当成 keepRec 传进去，恒为真
         check("新开一局后录制清零", pg.evaluate("() => G.rec.length") == 0,
               f"仍有 {pg.evaluate('() => G.rec.length')} 帧")
@@ -327,22 +306,18 @@ def main():
         check("回放按钮置灰", pg.evaluate("() => document.getElementById('g-replay').disabled"))
 
         print("6m2) 看历史帧时新帧不许把进度条抢回末尾")
-        lock(); pg.keyboard.down("w"); pg.wait_for_timeout(2500)
-        pg.keyboard.up("w"); pg.wait_for_timeout(1500); unlock()
+        tap("FWD"); tap("TLEFT")
         pg.evaluate("() => { stopReplay(); G.scrubbing = true; showRecFrame(1); }")
         v1 = pg.evaluate("() => document.getElementById('g-scrub').value")
         pg.evaluate("() => updateRecUI()")
         check("停在选中的那一帧",
               pg.evaluate("() => document.getElementById('g-scrub').value") == v1, v1)
-        lock(); pg.keyboard.down("w"); pg.wait_for_timeout(1500)
-        pg.keyboard.up("w"); pg.wait_for_timeout(1200)
+        tap("FWD")
         check("又开始玩之后进度条重新跟随最新帧",
               not pg.evaluate("() => G.scrubbing"))
-        unlock()
 
         print("6n) 回放不许把整页滚走")
-        lock(); pg.keyboard.down("w"); pg.wait_for_timeout(2500)
-        pg.keyboard.up("w"); pg.wait_for_timeout(1500); unlock()
+        tap("FWD")
         pg.click("#g-replay")            # 先点（Playwright 会为点击自行滚动）
         pg.evaluate("() => window.scrollTo(0, 0)")
         pg.wait_for_timeout(1500)
@@ -367,9 +342,16 @@ def main():
         pg.wait_for_timeout(300)
         check("选了别的模型后按钮才可点", not pg.is_disabled("#g-loadmodel"))
         pg.click("#g-loadmodel")
-        pg.wait_for_timeout(1800)
-        check("载入时进度条可见", pg.locator("#g-progwrap").is_visible())
-        ptext = pg.locator("#g-progtext").inner_text()
+        seen_bar, ptext = False, ""
+        for _ in range(60):          # 轮询，别指望固定时刻正好抓到
+            if pg.locator("#g-progwrap").is_visible():
+                seen_bar = True
+                t = pg.locator("#g-progtext").inner_text()
+                if t.strip():
+                    ptext = t
+                    break
+            pg.wait_for_timeout(200)
+        check("载入时进度条可见", seen_bar)
         check("进度条有阶段和秒数", ("预热" in ptext or "测速" in ptext
               or "载入" in ptext or "腾显存" in ptext or "准备" in ptext) and "s" in ptext, ptext)
         pg.wait_for_function("() => document.getElementById('g-loadmodel').textContent !== '载入中…'", timeout=300000)
