@@ -10,7 +10,6 @@ It has two parts: a data preview page and a playable GameNGen demo.
 | nginx, HTTPS, the only public entry | 25676 | 0.0.0.0 | this machine |
 | Static files | -- | nginx reads the directory | this machine |
 | Inference server, behind `/api/` | 25677 | 127.0.0.1 | 1202b, or this machine |
-| Static files, a local spare server | 25675 | 127.0.0.1 | this machine |
 
 The web page is a static site. It needs no GPU. nginx reads the files from the
 project directory, so no process of ours has to stay alive for the page to work.
@@ -61,16 +60,6 @@ nginx runs as `www-data` and reads the files directly. That works because
 `/home/youran` is `751`, the project directories are `775`, and the files are
 `664`. nginx also answers Range requests, which `SimpleHTTPRequestHandler`
 does not, so the preview videos can seek.
-
-### The spare static server
-
-```bash
-cd /home/youran/Nano/nanoinfra/projects/web_playground
-bash run.sh page      # 127.0.0.1:25675, local only
-```
-
-Use it when nginx is down or when you do not want to touch it. On plain HTTP
-the page talks to `http://<host>:25677` directly, as it did before.
 
 ## 3. Start the inference server on 1202b
 
