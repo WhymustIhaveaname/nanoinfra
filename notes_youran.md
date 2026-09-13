@@ -6,6 +6,16 @@
 
 穷举下来，三层真正的区别只有三条：**每集帧数**（4000 / 21000 / 4000，bots 与 pans 相同，这是唯一影响数据的一条，决定能切多长的 clip、以及「每 8 集留 1 集」的 val 粒度）；**sidecar 里一个 layer 标签**（`shards.py` 逐帧和逐集都写了，但 `encode.py` / `build_cache.py` / `dataset.py` 没有一处读它，到不了训练管线）；**一次多余的随机数抽取**（pans 分支会调 `rng.random()` 决定 world，bots 不调，结果恒为 WORLD_BOTS，但随机流被推前一格，所以同种子下两者录像不会字节相同——是死分支留下的痕迹，不是设计）。实测印证：三层的段长中位数都是 8 tic（`seg_tics` 的下界，即 committed turn），左右转向份额都对称（样本最大的 bots_long 21000 帧是 26.2% 对 26.3%），也就是 pans 的签名出现在每一层里。所以 `layers` 这个配置实质上只是一个旋钮——**多大比例的集是长集**，0.45/0.10/0.45 翻译过来就是「90% 短集、10% 长集」。要拿回配方头部描述的那个对照，得接通 `WORLD_ASLEEP` 或者向苏老师要研究线那份事件调度（docstring 里叫 EventPolicy，本仓库没有）。附带一提，`monsters.roster` / `monsters.k` / `monsters.awake_frac` 这三个配方键录制器根本不读，只有 `monsters.walkable_mask` 是活的。
 
+## [NOTE] 2026-09-13 — 苏老师的研究线坐实了上面那条，外加一个我们没看到的数据缺陷
+
+苏老师新整理了一个私有仓库 `nanoinfra-world-model`（单个 squash commit，从他私有树的 e1c813d 导出，内容等价于公开仓 f23554c）。它的 `core/` 和 `modalities/` 与公开仓**逐位相同**，`exemplars/nano_world_model/` 也是**逐位相同的快照**；真正的研究线在 `video_projects/world_model_lab/`（862 个文件，与 exemplar 同名的文件没有一个相同，`spec.py` 头注自称 "research twin"）。
+
+**上一条笔记的三点全部坐实，结论不变。** 研究线里 `LAYERS` 是六个（`ent_revisit / ent_long / bots / bots_long / kill / pans`），对应三种真正不同的 actor（`EventPolicy` / `KillPolicy` / `PansPolicy`）；`WORLD_ASLEEP` 是活分支；`policies.py:116` 确有 `EventPolicy`，是个 gaze-aware 事件编排器（接近、注视、转开、静止、回头、再注视），正是实体恒存语料存在的理由。所以公开 exemplar 的「三层塌成一个」是删减的结果，不是设计。**「bot 是队友」那条也坐实，而且方向比我们想的更彻底：研究线同样只发 `removebots` / `addbot`，从头到尾没有 `deathmatch 1`。** 这不是 exemplar 删减造成的，是那边一直如此。
+
+**我们没看到的一个数据缺陷（录制器 v4.1 修的）**：`warp x y` 不校验坐标，而地图外单面墙从背面不渲染，于是画面停止刷新而引擎继续走 tic——数据里就出现「你转了、画面不该变」。苏老师那边 pipe4 有 **166/1732 集（9.6%）从第一帧起就在地图外**，合 8.75% 的帧；病灶是 preroll 末尾的 home warp。修法是 `MapBounds`（几何取自引擎自己的 sector 线）+ 每个 warp 落点带 margin 32 + 逐 tic 哨兵出界整集丢 + sidecar 写 `recorder_version`。**我们自己录的语料是干净的**：拿 v4.1 的 `MapBounds` 审 bots 4000 帧、bots_long 21000 帧、pans 4000 帧，合计 29000 帧**出界 0 帧**。说得通——触发口是 preroll 的 home warp 和卡死逃脱的 warp，而 exemplar 版本根本没有 preroll，我们录的又是短集。公开 exemplar 至今仍停在 v4，它的卡死逃脱 warp 依旧从 `ARENA` 方框取点且无落点校验。
+
+**另外记一条关于上游文档的**：公开 exemplar 的 `block_diffusion.py` 头注仍写着「NELBO ≥ NLL，所以更低的 BD 分数确定性地赢过 AR」，而研究线同一处已加撤回标注——训练时 t 被截断、验证只取四个固定 t 点，这个分数没有严格 bound（`docs/ERRATA.md` #10）。苏老师那边一共登记了 18 条撤回，类型高度一致：把有条件的观测升级成机制断言、跨条件搬数字、用无效算术做归因。
+
 ## [IDEA] 2026-09-06 — 录制时关掉底部状态条
 
 把 `data/scenarios/deathmatch_simple.cfg` 的 `render_hud` 关掉，别再录底部那条血条／弹药／脸部图标。它编码得极差：24 段 clip 逐行统计下来，画面主体（0–100 行）重建 PSNR **30.56 dB**，状态条（108–128 行）只有 **20.30 dB**，误差是主体的 **10.6 倍**，最差的几行正是数字和脸部图标所在处——Cosmos 这种为自然图像训练的编码器对高频小字符本来就不擅长。而且它没用：血量弹药不携带任何世界动力学信息。代价却是实打实的，128px 对应 16×16 潜在网格，状态条吃掉约 2.5 行，每段 clip 的 1280 个码里 **约 200 个（16%）花在一条 UI 上**。
