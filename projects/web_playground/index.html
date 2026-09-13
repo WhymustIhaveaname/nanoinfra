@@ -234,7 +234,10 @@ async function api(path, opts, ms) {
   finally { clearTimeout(t); }
 }
 
-const GAME_API = `http://${location.hostname}:25677`;
+// https 下走同源的 /api（nginx 反代到 :25677），不能直连 http://host:25677：
+// 一是混合内容会被浏览器拦掉，二是自签证书的跨源 fetch 不弹「继续前往」而是静默失败。
+// 纯 http 只剩本机直连静态服务器这一条路（run.sh page，绑 127.0.0.1:25675），保持原样。
+const GAME_API = location.protocol === 'https:' ? '/api' : `http://${location.hostname}:25677`;
 const G = {
   sid: null, stepping: false, steps: 0,
   times: [],

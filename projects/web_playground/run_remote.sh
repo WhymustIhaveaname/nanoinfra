@@ -8,9 +8,10 @@
 # 映射到本机同一个端口。页面里那个「推理服务」地址一个字都不用改，
 # 它看到的还是 <本机>:25677，只是背后换成了 A6000。
 #
-# 两侧绑定故意不一样：远端只听 127.0.0.1（这接口没有认证，不该对整个实验室
-# 网络敞开，只有 SSH 隧道进得来就够了）；本机隧道听 0.0.0.0，因为页面是在
-# 陛下的浏览器里跑的，它连的是这台机器的 IP 而不是 127.0.0.1。
+# 两侧都只听 127.0.0.1：这接口没有认证，不该对实验室网络、更不该对公网敞开。
+# 浏览器够得着它是因为 nginx 在 25676 的 HTTPS 下把 /api/ 反代过来（见 DEPLOY.md），
+# 而 nginx 就在本机，走环回即可。2026-09-12 之前本机隧道听的是 0.0.0.0，那时页面
+# 直连 http://<本机IP>:25677，等于把一个无认证的 GPU 接口挂在公网上。
 #
 # 落在 1202b 的哪里：/tmp。那台机器 /tmp 是 2TB tmpfs 而它有 4TB 内存，
 # 放 12GB 权重加 5GB venv 毫无压力；AFS 家目录只有 4.8GB 配额装不下，而 /var/tmp 只剩 23G
@@ -64,7 +65,7 @@ EOS
 
 kill_tunnel() {
   pkill -u "$(whoami)" -f "ssh -N .*:$PORT:127.0.0.1:$PORT" 2>/dev/null
-  ssh -O cancel -L "0.0.0.0:$PORT:127.0.0.1:$PORT" "$HOST" 2>/dev/null
+  ssh -O cancel -L "127.0.0.1:$PORT:127.0.0.1:$PORT" "$HOST" 2>/dev/null
   sleep 2
   ! ss -tlnp 2>/dev/null | grep -q ":$PORT "
 }
@@ -121,7 +122,18 @@ start)
   remote <<EOS
 pkill -u \$(whoami) -f "doom_ngen_server.py --port $PORT" 2>/dev/null
 pkill -u \$(whoami) -f "gpu_hold.py" 2>/dev/null   # 服务自己会占卡，外挂的先撤
-sleep 6
+# 真的等到显存还回来再起服务。固定 sleep 不够：占位进程退出前显存一直挂着，
+# 服务一上来就 CUDA OOM（实测占位还握着 46.26 GiB 时服务直接起不来）。
+for i in \$(seq 1 60); do
+  pgrep -u \$(whoami) -f gpu_hold.py >/dev/null || break
+  sleep 1
+done
+for i in \$(seq 1 30); do
+  used=\$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits -i $GPU)
+  [ "\$used" -lt 8000 ] && break
+  sleep 1
+done
+echo "  起服务前卡 $GPU 已用 \${used:-?} MiB"
 cd $B/app/gamengen
 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True CUDA_VISIBLE_DEVICES=$GPU \
   nohup $B/.venv/bin/python doom_ngen_server.py --port $PORT \
@@ -154,7 +166,7 @@ EOS
   # 所以 kill_tunnel 里必须用 ssh -O cancel 把主连接上的转发也撤掉。
   nohup ssh -N -o ControlPath=none -o ExitOnForwardFailure=yes \
         -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
-        -o TCPKeepAlive=yes -L "0.0.0.0:$PORT:127.0.0.1:$PORT" "$HOST" \
+        -o TCPKeepAlive=yes -L "127.0.0.1:$PORT:127.0.0.1:$PORT" "$HOST" \
         > outputs/gamengen/tunnel.log 2>&1 &
   echo "  隧道 PID $!"
   sleep 5

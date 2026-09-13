@@ -74,8 +74,16 @@ def main():
     print(f"[hold] 已占 {got:.1f} GiB，这张卡还剩 {free / GiB:.1f} GiB 给我们自己用",
           flush=True)
 
+    # 分片睡：SIGTERM 只是让处理函数跑一遍，PEP 475 之后 time.sleep 会把剩下的
+    # 时间续着睡完。整段睡 60 秒的话，收到 SIGTERM 最多要 60 秒才真退出，
+    # 而这段时间显存一直占着 —— run_remote.sh start 撞上过这个，远端服务 CUDA OOM。
+    def nap(sec):
+        end = time.time() + sec
+        while not stop and time.time() < end:
+            time.sleep(min(1.0, end - time.time()))
+
     while not stop:
-        time.sleep(a.poll if a.poll > 0 else 3600)
+        nap(a.poll if a.poll > 0 else 3600)
         if stop or a.poll <= 0:
             continue
         # 别人的任务结束会腾出显存，补占上去，否则空位又会被人挤进来

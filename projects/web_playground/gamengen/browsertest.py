@@ -17,7 +17,9 @@ ACTS = ["FWD", "BACK", "MLEFT", "MRIGHT", "TLEFT", "TRIGHT", "ATTACK", ""]
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default="http://127.0.0.1:25676/")
+    # 默认走真实入口：nginx 的 HTTPS + 同源 /api 反代。按 IP 访问拿到的是自签证书，
+    # 所以下面开 ignore_https_errors；不开的话页面根本加载不了，而且报错不像证书问题。
+    ap.add_argument("--url", default="https://127.0.0.1:25676/")
     ap.add_argument("--shots", default="../outputs/gamengen")
     a = ap.parse_args()
 
@@ -30,7 +32,8 @@ def main():
 
     with sync_playwright() as pw:
         br = pw.chromium.launch(args=["--no-sandbox", "--use-gl=swiftshader"])
-        pg = br.new_page(viewport={"width": 1500, "height": 1000})
+        pg = br.new_page(viewport={"width": 1500, "height": 1000},
+                         ignore_https_errors=True)
         errs = []
         pg.on("pageerror", lambda e: errs.append(str(e)))
         pg.on("console", lambda m: errs.append(m.text) if m.type == "error" else None)

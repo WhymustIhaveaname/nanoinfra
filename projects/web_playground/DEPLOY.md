@@ -5,26 +5,72 @@ It has two parts: a data preview page and a playable GameNGen demo.
 
 ## 1. What runs where
 
-| Part | Port | Host |
-|---|---|---|
-| Web page (static files) | 25676 | this machine |
-| Inference server | 25677 | 1202b, or this machine |
+| Part | Port | Bind | Host |
+|---|---|---|---|
+| nginx, HTTPS, the only public entry | 25676 | 0.0.0.0 | this machine |
+| Static files | -- | nginx reads the directory | this machine |
+| Inference server, behind `/api/` | 25677 | 127.0.0.1 | 1202b, or this machine |
+| Static files, a local spare server | 25675 | 127.0.0.1 | this machine |
 
-The web page is a static site. It needs no GPU.
+The web page is a static site. It needs no GPU. nginx reads the files from the
+project directory, so no process of ours has to stay alive for the page to work.
 
 The inference server needs a GPU. It runs the diffusion model.
 The page sends one action. The server sends back one frame.
 
-## 2. Start the page
+nginx gives one origin to both parts. The page asks `/api/new`, and nginx
+passes it to `127.0.0.1:25677/new`.
 
-```bash
-cd /home/youran/nanoinfra/projects/web_playground
-bash run.sh page
-```
+## 2. Open the page
 
-Open `http://10.189.12.164:25676/` in a browser.
+nginx runs at boot. Nothing to start.
+
+    https://autosr.app:25676/      from outside, a trusted certificate
+    https://10.189.12.164:25676/   from the laboratory network, a self-signed
+                                   certificate, so accept it once
+
+Plain `http://...:25676/` answers with a redirect to `https`, so an old
+bookmark still works.
 
 The data preview tab works now. The play tab needs the inference server.
+
+### Why HTTPS is not optional
+
+From outside the name is `autosr.app`. The whole `.app` suffix is in the HSTS
+preload list of Chromium and Edge. Two results, and no server setting changes
+either one:
+
+1. `http://autosr.app:25676` is upgraded to `https` by the browser.
+2. A self-signed certificate then gives no "proceed anyway" button.
+
+A plain `python -m http.server` receives a TLS ClientHello, answers 400, and
+the page does not open at all. The log fills with lines that start `\x16\x03\x01`.
+That is a TLS record header. It means the client spoke TLS to a plain server.
+
+The static files and the API must share one origin. A cross-origin `fetch` to
+a second port with a self-signed certificate shows no prompt. It fails in
+silence. One origin means the reader accepts the certificate once, for both.
+
+### nginx
+
+The site is `/etc/nginx/sites-available/nanoinfra-playground`. Two server
+blocks, as the other services on this machine have: `autosr.app` uses the
+Let's Encrypt certificate, an IP address uses the self-signed one.
+
+nginx runs as `www-data` and reads the files directly. That works because
+`/home/youran` is `751`, the project directories are `775`, and the files are
+`664`. nginx also answers Range requests, which `SimpleHTTPRequestHandler`
+does not, so the preview videos can seek.
+
+### The spare static server
+
+```bash
+cd /home/youran/Nano/nanoinfra/projects/web_playground
+bash run.sh page      # 127.0.0.1:25675, local only
+```
+
+Use it when nginx is down or when you do not want to touch it. On plain HTTP
+the page talks to `http://<host>:25677` directly, as it did before.
 
 ## 3. Start the inference server on 1202b
 
@@ -119,11 +165,15 @@ Measured: load average 44 on 128 cores, and the tunnel was still 52 ms.
 The 5-to-9-second delay came from the stale master connection above.
 Check the tunnel first. Do not blame the other users.
 
-**The bind addresses are different on purpose.**
-The remote server binds to `127.0.0.1`. The API has no authentication.
-Only the SSH tunnel reaches it. Do not open it to the laboratory network.
-The tunnel and the local server bind to `0.0.0.0`.
-The browser runs on a different machine. It connects to the IP of this machine.
+**Everything but nginx binds to `127.0.0.1`.**
+The API has no authentication, so the remote server, the tunnel, and the local
+server all bind to the loopback address. nginx is the only public port, and
+nginx runs on this machine, so the loopback is enough for it.
+
+Before 2026-09-12 the tunnel bound `0.0.0.0`, because the page asked
+`http://<this machine>:25677` from the reader's browser. That put an
+unauthenticated GPU endpoint on the public network. The `/api/` route removed
+the reason for it.
 
 ## 6. Test the deployment
 
@@ -158,7 +208,7 @@ Look at the video. The model must respond to each action.
 Do this only if you change the data or the sampling.
 
 ```bash
-cd /home/youran/nanoinfra
+cd /home/youran/Nano/nanoinfra
 .venv/bin/python projects/web_playground/build_preview.py   # clip comparisons
 .venv/bin/python projects/web_playground/build_videos.py    # 60-second videos
 ```
@@ -174,6 +224,12 @@ These scripts read from other directories in the repository:
 **The play tab shows "连不上"**
 The inference server does not run, or the tunnel is down.
 Run `bash run_remote.sh status`.
+
+**The whole page does not open**
+Check `systemctl is-active nginx` and `ss -ltnp | grep 25676`.
+Then read `/var/log/nginx/error.log`.
+A 403 on every file means `www-data` lost its read path; check the modes
+listed under nginx above.
 
 **A model load fails**
 Read `/tmp/youran-gamengen/server.log` on 1202b.
